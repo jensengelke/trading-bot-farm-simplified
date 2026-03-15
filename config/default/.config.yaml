@@ -10,3 +10,6 @@ database:
 flex:
   flex_token: "418460991372630500000"
   flex_query_id: "1383385"
+
+ui:
+  port: 5000

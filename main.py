@@ -6,6 +6,9 @@ import signal
 import threading
 import logging
 import argparse
+from datetime import datetime
+import shutil
+import glob
 
 # Ensure the local src folder is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
@@ -88,10 +91,46 @@ def print_menu():
     print("  7. Exit")
     print("="*40)
 
+def roll_log_files(log_dir):
+    """
+    Moves existing .log files in log_dir to a timestamped sub-directory.
+    """
+    if not os.path.isdir(log_dir):
+        return
+    
+    now = datetime.now()
+    timestamp_dir_name = now.strftime("%Y-%m-%d-%H-%M-%S")
+    timestamp_dir_path = os.path.join(log_dir, timestamp_dir_name)
+    
+    try:
+        # Find log files before creating the new directory
+        log_files = glob.glob(os.path.join(log_dir, '*.log'))
+
+        if log_files:
+            os.makedirs(timestamp_dir_path, exist_ok=True)
+            
+            for log_file in log_files:
+                # Check if the destination file already exists (unlikely)
+                # and if so, don't move it.
+                base_name = os.path.basename(log_file)
+                if not os.path.exists(os.path.join(timestamp_dir_path, base_name)):
+                    shutil.move(log_file, timestamp_dir_path)
+                else:
+                    print(f"Log file {base_name} already exists in {timestamp_dir_path}, skipping.")
+
+    except Exception as e:
+        # If logging is not yet configured, just print to console.
+        print(f"Error rolling log files: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description="Trading Bot Farm V2")
     parser.add_argument("--config-dir", default="config/default", help="Path to config directory")
     args = parser.parse_args()
+
+    # --- Log rolling ---
+    config_dir_name = os.path.basename(os.path.normpath(args.config_dir))
+    log_dir = os.path.join("logs", config_dir_name)
+    roll_log_files(log_dir)
 
     # --- Configure system logging according to specification ---
     logger = logging.getLogger("system")
@@ -102,8 +141,6 @@ def main():
     console_formatter = logging.Formatter('%(message)s')
     console_handler.setFormatter(console_formatter)
     # File handler for system log (DEBUG level for tracing)
-    config_dir_name = os.path.basename(os.path.normpath(args.config_dir))
-    log_dir = os.path.join("logs", config_dir_name)
     os.makedirs(log_dir, exist_ok=True)
     file_handler = logging.FileHandler(os.path.join(log_dir, "system.log"), mode='a')
     file_handler.setLevel(logging.DEBUG)

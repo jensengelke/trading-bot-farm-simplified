@@ -113,6 +113,7 @@ class TimerManager:
     
     def remove_timer(self, timer_id: str):
         """Remove a timer by its ID."""
+        logger.info(f"Removing timer_id: {timer_id} from timers: {self.timers}")
         with self.lock:
             if timer_id in self.timers:
                 del self.timers[timer_id]

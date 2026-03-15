@@ -1,9 +1,17 @@
 import logging
 import os
 from abc import ABCMeta, abstractmethod
+from ibapi.contract import Contract
 from src.bots.config_base import ConfigBase
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
+
+class ContractResolutionStatus:
+    def __init__(self):
+        self.complete = False
+        self.total_contracts = 0
+        self.errors = []
+
 
 class BaseBot(metaclass=ABCMeta):
     def __init__(self, config: ConfigBase, ib_connection: IBConnection, timer_manager: TimerManager, config_dir: str):
@@ -11,6 +19,18 @@ class BaseBot(metaclass=ABCMeta):
         self.ib_connection = ib_connection
         self.timer_manager = timer_manager
         self._init_logger(config_dir)
+
+        self._contract_resolution_requests = {}
+
+    def resolve_contracts(self, search_contract: Contract, result_contracts: list, status: ContractResolutionStatus, callback):
+        req_id = self.ib_connection.request_contract_details(search_contract)
+        self._contract_resolution_requests[req_id] = {
+            "search_contract": search_contract,
+            "result_contracts": result_contracts,
+            "status": status,
+            "callback": callback
+        }
+
 
     def _init_logger(self, config_dir: str):
         """Initializes a dedicated logger for the bot."""
@@ -58,3 +78,21 @@ class BaseBot(metaclass=ABCMeta):
 
     def on_timer(self, event_name: str, event_data: any = None):
         pass
+
+    def contractDetails(self, reqId, contractDetails):
+        if reqId in self._contract_resolution_requests:
+            request_context = self._contract_resolution_requests[reqId]
+            request_context["result_contracts"].append(contractDetails.contract)
+            request_context["status"].total_contracts += 1
+
+    def contractDetailsEnd(self, reqId):
+        if reqId in self._contract_resolution_requests:
+            request_context = self._contract_resolution_requests[reqId]
+            request_context["status"].complete = True
+            request_context["callback"]()
+            del self._contract_resolution_requests[reqId]
+
+    def error(self, reqId, errorCode, errorString):
+        if reqId in self._contract_resolution_requests:
+            request_context = self._contract_resolution_requests[reqId]
+            request_context["status"].errors.append({"errorCode": errorCode, "errorString": errorString})

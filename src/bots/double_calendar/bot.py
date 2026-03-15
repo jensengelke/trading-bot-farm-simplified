@@ -25,6 +25,7 @@ class DoubleCalendarBot(BaseBot):
         self.logger.info(f"DoubleCalendarBot received tick: {reqId}, {tickType}, {price}")
 
     def on_timer(self, event_name: str, event_data: any = None):
+        self.logger.info(f"DoubleCalendarBot received timer event: {event_name}")
         if event_name == "start":
             self.test_start()
         elif event_name == "ping":
@@ -53,6 +54,7 @@ class DoubleCalendarBot(BaseBot):
 
     def test_stop(self):
         self.logger.info("test_stop() called")
+        self.logger.info(f"timer id: {self.ping_timer_id}")
         if self.ping_timer_id:
             self.timer_manager.remove_timer(self.ping_timer_id)
             self.ping_timer_id = None
