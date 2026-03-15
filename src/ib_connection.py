@@ -1,0 +1,368 @@
+import sys
+import threading
+import logging
+from typing import Optional, Dict, Any
+
+
+from ibapi.client import EClient
+from ibapi.wrapper import EWrapper
+from ibapi.contract import Contract
+from ibapi.order import Order
+from ibapi.execution import ExecutionFilter, Execution
+from ibapi.scanner import ScannerSubscription
+from decimal import Decimal
+
+from src.utils import trace
+
+logger = logging.getLogger("system")
+
+class IBConnection(EWrapper, EClient):
+    """
+    IBConnection core infrastructure layer encapsulating the ibapi EWrapper and EClient.
+    Maintains cached state and handles multiplexing data updates.
+    """
+    @trace
+    def __init__(self, host: str, port: int, client_id: int, selected_account: str = ""):
+        EClient.__init__(self, self)
+        
+        self._host = host
+        self._port = port
+        self._client_id = client_id
+        self.selected_account = selected_account
+
+        # Internal caches
+        self.market_data: Dict[int, Dict[str, Any]] = {}  # reqId -> {tickType -> value}
+        self.portfolio_data: Dict[str, Dict[str, Any]] = {}  # account -> {symbol -> {position, avgCost}}
+        self.account_data: Dict[str, Dict[str, Any]] = {}  # account -> {key -> value}
+        self.orders_data: Dict[int, Any] = {}  # orderId -> details
+        self.executions_data: Dict[int, list] = {}
+        self.execution_events: Dict[int, threading.Event] = {}
+
+        # State and concurrency mapping
+        self.next_order_id: Optional[int] = None
+        self._connected_event = threading.Event()
+        self.api_thread: Optional[threading.Thread] = None
+        
+        self.listeners = []
+        # Subscriptions tracking
+        self.req_id_counter = 1000
+        self.active_subscriptions: Dict[int, int] = {}  # conId -> reqId
+
+    @trace
+    def get_next_req_id(self) -> int:
+        req_id = self.req_id_counter
+        self.req_id_counter += 1
+        return req_id
+
+    @trace
+    def connect_and_start(self) -> bool:
+        """Attempts the socket connection and starts a dedicated daemon thread."""
+        logger.info(f"Connecting to IB Gateway/TWS at {self._host}:{self._port} (Client: {self._client_id})")
+        self.connect(self._host, self._port, self._client_id)
+
+        self.api_thread = threading.Thread(target=self.run, daemon=True)
+        self.api_thread.start()
+
+        # Wait until nextValidId confirms connection
+        is_connected = self._connected_event.wait(timeout=5)
+        if is_connected:
+            logger.info("Successfully connected to IB API.")
+            
+            # Initiate auto-sync
+            logger.debug("Requesting sync data: open orders, positions, and account updates.")
+            if self._client_id == 0:
+                self.reqAutoOpenOrders(True)
+            self.reqAllOpenOrders()
+            self.reqPositions()
+            
+            # Subscribing to account updates is deferred until `managedAccounts` 
+            # provides the list of available accounts from the broker.
+            
+            return True
+        else:
+            logger.error("Connection timed out. Please check if TWS/Gateway is running.")
+            return False
+
+    @trace
+    def disconnect_and_stop(self):
+        """Disconnects from the broker and stops the loop."""
+        if self.isConnected():
+            logger.info("Disconnecting from IB API...")
+            self.disconnect()
+            self._connected_event.clear()
+
+    # --- EWrapper Overrides (Incoming Data) ---
+
+    @trace
+    def nextValidId(self, orderId: int):
+        super().nextValidId(orderId)
+        self.next_order_id = orderId
+        self._connected_event.set()
+        logger.debug(f"Received nextValidId: {orderId}")
+
+    @trace
+    def error(self, reqId: int, errorTime: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = ""):
+        super().error(reqId, errorTime, errorCode, errorString, advancedOrderRejectJson)
+        # IB produces many informational "errors". Only log important ones as actual errors.
+        if errorCode in [2104, 2106, 2158]:
+            logger.debug(f"IB Info [{errorCode}]: {errorString}")
+        else:
+            logger.error(f"IB Error [{errorCode}]: {errorString}")
+
+    @trace
+    def register_listener(self, listener):
+        self.listeners.append(listener)
+
+    @trace
+    def tickPrice(self, reqId: int, tickType: int, price: float, attrib):
+        super().tickPrice(reqId, tickType, price, attrib)
+        if reqId not in self.market_data:
+            self.market_data[reqId] = {}
+        self.market_data[reqId][tickType] = price
+        for listener in self.listeners:
+            listener.tick_price(reqId, tickType, price, attrib)
+
+    @trace
+    def position(self, account: str, contract: Contract, position: Decimal, avgCost: float):
+        super().position(account, contract, position, avgCost)
+        # Apply Account Isolation
+        if self.selected_account and account != self.selected_account:
+            return
+
+        if account not in self.portfolio_data:
+            self.portfolio_data[account] = {}
+        
+        symbol = contract.localSymbol or contract.symbol
+        self.portfolio_data[account][symbol] = {
+            "position": position,
+            "avgCost": avgCost,
+            "contract": contract
+        }
+
+    @trace
+    def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
+        super().updateAccountValue(key, val, currency, accountName)
+        # Apply Account Isolation
+        if self.selected_account and accountName != self.selected_account:
+            return
+
+        if accountName not in self.account_data:
+            self.account_data[accountName] = {}
+            
+        # Group by currency. If no currency is provided, group under "INFO"
+        curr_key = currency if currency else "INFO"
+        
+        if curr_key not in self.account_data[accountName]:
+            self.account_data[accountName][curr_key] = {}
+            
+        self.account_data[accountName][curr_key][key] = val
+
+    @trace
+    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState):
+        super().openOrder(orderId, contract, order, orderState)
+        # Account context protection
+        if self.selected_account and order.account and order.account != self.selected_account:
+            return
+
+        self.orders_data[orderId] = {
+            "contract": contract,
+            "order": order,
+            "state": orderState.status
+        }
+        for listener in self.listeners:
+            listener.open_order(orderId, contract, order, orderState)
+    
+    @trace
+    def orderStatus(self, orderId: int, status: str, filled: Decimal, remaining: Decimal, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
+        super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+        # Check isolated account directly or skip check if we assume order is ours
+        if orderId in self.orders_data:
+            self.orders_data[orderId]["state"] = status
+            self.orders_data[orderId]["filled"] = filled
+            self.orders_data[orderId]["remaining"] = remaining
+            self.orders_data[orderId]["avgFillPrice"] = avgFillPrice
+        for listener in self.listeners:
+            listener.order_status(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+
+    @trace
+    def execDetails(self, reqId: int, contract: Contract, execution: Execution):
+        super().execDetails(reqId, contract, execution)
+        if self.selected_account and execution.acctNumber and execution.acctNumber != self.selected_account:
+            return
+            
+        if reqId not in self.executions_data:
+            self.executions_data[reqId] = []
+            
+        self.executions_data[reqId].append({
+            "contract": contract,
+            "execution": execution
+        })
+        for listener in self.listeners:
+            listener.exec_details(reqId, contract, execution)
+
+    @trace
+    def execDetailsEnd(self, reqId: int):
+        super().execDetailsEnd(reqId)
+        if reqId in self.execution_events:
+            self.execution_events[reqId].set()
+
+    @trace
+    def managedAccounts(self, accountsList: str):
+        super().managedAccounts(accountsList)
+        logger.info(f"Managed Accounts received: {accountsList}")
+        accounts = [a.strip() for a in accountsList.split(",") if a.strip()]
+        
+        # If no selected_account was configured, pick the first one from the list automatically
+        if not self.selected_account and accounts:
+            self.selected_account = accounts[0]
+            logger.warning(f"No selected_account configured. Auto-selecting first account: {self.selected_account}")
+            
+        # As soon as we know our account, start polling its full update stream
+        if self.selected_account:
+            logger.info(f"Requesting consistent account updates for {self.selected_account}")
+            self.reqAccountUpdates(True, self.selected_account)
+
+    # --- API Action Methods (Outgoing Requests) ---
+
+    @trace
+    def subscribe_market_data(self, contract: Contract) -> Optional[int]:
+        con_id = contract.conId
+        if not con_id:
+            logger.error(f"Cannot subscribe to market data: Invalid or missing conId for {contract.symbol}")
+            return None
+            
+        # Multiplex check
+        if con_id in self.active_subscriptions:
+            logger.debug(f"Already multiplexing market data for conId {con_id}.")
+            return self.active_subscriptions[con_id]
+
+        req_id = self.get_next_req_id()
+        self.active_subscriptions[con_id] = req_id
+        logger.info(f"Subscribing to market data for {contract.symbol} (conId: {con_id}, ReqId: {req_id})")
+        self.reqMktData(req_id, contract, "", False, False, [])
+        return req_id
+
+    @trace
+    def unsubscribe_market_data(self, contract: Contract):
+        con_id = contract.conId
+        req_id = self.active_subscriptions.get(con_id)
+        if req_id is not None:
+            logger.info(f"Unsubscribing from market data for {contract.symbol} (conId: {con_id}, ReqId: {req_id})")
+            self.cancelMktData(req_id)
+            del self.active_subscriptions[con_id]
+
+    @trace
+    def place_order(self, contract: Contract, order: Order) -> Optional[int]:
+        if self.next_order_id is None:
+            logger.error("Cannot place order: Not connected or missing nextValidId.")
+            return None
+            
+        order_id = self.next_order_id
+        self.next_order_id += 1
+        
+        logger.info(f"Placing Order {order_id} for {contract.symbol}: {order.action} {order.totalQuantity}")
+        self.placeOrder(order_id, contract, order)
+        return order_id
+
+    @trace
+    def cancel_order(self, order_id: int):
+        logger.info(f"Canceling order {order_id}")
+        self.cancelOrder(order_id, "")
+
+    @trace
+    def get_orders(self, include_closed: bool = False) -> Dict[int, Any]:
+        """Returns a copy of the active (and optionally closed) orders for the selected account."""
+        filtered_orders = {}
+        for k, v in self.orders_data.items():
+            if self.selected_account and v["order"].account and v["order"].account != self.selected_account:
+                continue
+            if not include_closed and v.get("state") in ["Filled", "Cancelled", "Inactive"]:
+                continue
+            filtered_orders[k] = v
+        return filtered_orders
+
+    @trace
+    def get_cached_positions(self) -> Dict[str, Dict[str, Any]]:
+        # Only return data for the selected account
+        if self.selected_account:
+            return {self.selected_account: self.portfolio_data.get(self.selected_account, {}).copy()}
+        return self.portfolio_data.copy()
+
+    @trace
+    def get_cached_account_summary(self) -> Dict[str, Dict[str, Any]]:
+        # Only return data for the selected account
+        if self.selected_account:
+            return {self.selected_account: self.account_data.get(self.selected_account, {}).copy()}
+        return self.account_data.copy()
+
+    # --- Async Data Request Interfaces ---
+
+    @trace
+    def request_contract_details(self, contract: Contract) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting contract details for {contract.symbol} (ReqId: {req_id})")
+        self.reqContractDetails(req_id, contract)
+        return req_id
+
+    @trace
+    def request_option_chain(self, underlying_symbol: str, exchange: str, sec_type: str, conid: int) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting option chain for {underlying_symbol} (ReqId: {req_id})")
+        self.reqSecDefOptParams(req_id, underlying_symbol, exchange, sec_type, conid)
+        return req_id
+
+    @trace
+    def request_historical_data(self, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int = 1, keep_up_to_date: bool = False) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting historical data for {contract.symbol} (ReqId: {req_id})")
+        self.reqHistoricalData(req_id, contract, end_datetime, duration, bar_size, what_to_show, use_rth, 1, keep_up_to_date, [])
+        return req_id
+
+    @trace
+    def subscribe_realtime_bars(self, contract: Contract, bar_size: int, what_to_show: str, use_rth: bool = True) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Subscribing to real-time bars for {contract.symbol} (ReqId: {req_id})")
+        self.reqRealTimeBars(req_id, contract, bar_size, what_to_show, use_rth, [])
+        return req_id
+
+    @trace
+    def subscribe_market_depth(self, contract: Contract, num_rows: int = 5, is_smart_depth: bool = False) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Subscribing to market depth for {contract.symbol} (ReqId: {req_id})")
+        self.reqMktDepth(req_id, contract, num_rows, is_smart_depth, [])
+        return req_id
+
+    @trace
+    def request_fundamental_data(self, contract: Contract, report_type: str) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting fundamental data ({report_type}) for {contract.symbol} (ReqId: {req_id})")
+        self.reqFundamentalData(req_id, contract, report_type, [])
+        return req_id
+
+    @trace
+    def request_executions(self, execution_filter: ExecutionFilter) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting executions (ReqId: {req_id})")
+        self.reqExecutions(req_id, execution_filter)
+        return req_id
+
+    @trace
+    def request_news_article(self, provider_code: str, article_id: str) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting news article {article_id} from {provider_code} (ReqId: {req_id})")
+        self.reqNewsArticle(req_id, provider_code, article_id, [])
+        return req_id
+
+    @trace
+    def request_historical_news(self, conid: int, provider_codes: str, start: str, end: str, total_results: int) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Requesting historical news for conId {conid} (ReqId: {req_id})")
+        self.reqHistoricalNews(req_id, conid, provider_codes, start, end, total_results, [])
+        return req_id
+
+    @trace
+    def subscribe_market_scanner(self, scanner_subscription: ScannerSubscription) -> int:
+        req_id = self.get_next_req_id()
+        logger.info(f"Subscribing to market scanner (ReqId: {req_id})")
+        self.reqScannerSubscription(req_id, scanner_subscription, [], [])
+        return req_id
