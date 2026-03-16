@@ -37,6 +37,8 @@ class IBConnection(EWrapper, EClient):
         self.orders_data: Dict[int, Any] = {}  # orderId -> details
         self.executions_data: Dict[int, list] = {}
         self.execution_events: Dict[int, threading.Event] = {}
+        self.contract_details_data: Dict[int, list] = {}
+        self.contract_details_events: Dict[int, threading.Event] = {}
 
         # State and concurrency mapping
         self.next_order_id: Optional[int] = None
@@ -44,6 +46,7 @@ class IBConnection(EWrapper, EClient):
         self.api_thread: Optional[threading.Thread] = None
         
         self.listeners = []
+        self.request_listeners: Dict[int, Any] = {} # reqId -> listener for a specific request
         # Subscriptions tracking
         self.req_id_counter = 1000
         self.active_subscriptions: Dict[int, int] = {}  # conId -> reqId
@@ -101,8 +104,12 @@ class IBConnection(EWrapper, EClient):
         logger.debug(f"Received nextValidId: {orderId}")
 
     @trace
-    def error(self, reqId: int, errorTime: int, errorCode: int, errorString: str, advancedOrderRejectJson: str = ""):
+    def error(self, reqId: int, errorTime: str, errorCode: int, errorString: str, advancedOrderRejectJson: str = ""):
         super().error(reqId, errorTime, errorCode, errorString, advancedOrderRejectJson)
+
+        if reqId in self.request_listeners:
+            self.request_listeners[reqId].error(reqId, errorCode, errorString)
+
         # IB produces many informational "errors". Only log important ones as actual errors.
         if errorCode in [2104, 2106, 2158]:
             logger.debug(f"IB Info [{errorCode}]: {errorString}")
@@ -222,6 +229,57 @@ class IBConnection(EWrapper, EClient):
             logger.info(f"Requesting consistent account updates for {self.selected_account}")
             self.reqAccountUpdates(True, self.selected_account)
 
+
+    @trace
+    def contractDetails(self, reqId: int, contractDetails):
+        super().contractDetails(reqId, contractDetails)
+        if reqId in self.request_listeners:
+            self.request_listeners[reqId].contractDetails(reqId, contractDetails)
+            return
+
+        if reqId not in self.contract_details_data:
+            self.contract_details_data[reqId] = []
+        self.contract_details_data[reqId].append(contractDetails)
+        for listener in self.listeners:
+            listener.contractDetails(reqId, contractDetails)
+
+    @trace
+    def contractDetailsEnd(self, reqId: int):
+        super().contractDetailsEnd(reqId)
+        if reqId in self.request_listeners:
+            listener = self.request_listeners.pop(reqId)
+            listener.contractDetailsEnd(reqId)
+            return
+
+        if reqId in self.contract_details_events:
+            self.contract_details_events[reqId].set()
+        for listener in self.listeners:
+            listener.contractDetailsEnd(reqId)
+
+    @trace
+    def securityDefinitionOptionParameter(self, reqId: int, exchange: str, underlyingConId: int, tradingClass: str, multiplier: str, expirations: set, strikes: set):
+        logger.info(f"Security definition option parameter received for reqId {reqId}")
+        super().securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
+        if reqId in self.request_listeners:
+            self.request_listeners[reqId].securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
+            return
+
+        for listener in self.listeners:
+            listener.securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
+
+    @trace
+    def securityDefinitionOptionParameterEnd(self, reqId: int):
+        logger.info(f"Security definition option parameter end received for reqId {reqId}")
+        super().securityDefinitionOptionParameterEnd(reqId)
+        if reqId in self.request_listeners:
+            listener = self.request_listeners.pop(reqId)
+            listener.securityDefinitionOptionParameterEnd(reqId)
+            return
+
+        for listener in self.listeners:
+            listener.securityDefinitionOptionParameterEnd(reqId)
+
+
     # --- API Action Methods (Outgoing Requests) ---
 
     @trace
@@ -298,15 +356,17 @@ class IBConnection(EWrapper, EClient):
     # --- Async Data Request Interfaces ---
 
     @trace
-    def request_contract_details(self, contract: Contract) -> int:
+    def request_contract_details(self, listener: Any, contract: Contract) -> int:
         req_id = self.get_next_req_id()
+        self.request_listeners[req_id] = listener
         logger.info(f"Requesting contract details for {contract.symbol} (ReqId: {req_id})")
         self.reqContractDetails(req_id, contract)
         return req_id
 
     @trace
-    def request_option_chain(self, underlying_symbol: str, exchange: str, sec_type: str, conid: int) -> int:
+    def request_option_chain(self, listener: Any, underlying_symbol: str, exchange: str, sec_type: str, conid: int) -> int:
         req_id = self.get_next_req_id()
+        self.request_listeners[req_id] = listener
         logger.info(f"Requesting option chain for {underlying_symbol} (ReqId: {req_id})")
         self.reqSecDefOptParams(req_id, underlying_symbol, exchange, sec_type, conid)
         return req_id
