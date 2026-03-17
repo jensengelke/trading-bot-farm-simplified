@@ -94,9 +94,32 @@ class DoubleCalendarBot(BaseBot):
         if len(result_contracts) > 0:
             self.underlying = result_contracts[0]
             self.logger.info(f"Selected underlying contract: {self.underlying}")
+            self.subscribe_market_date(self.underlying)
         else:
             self.logger.error("No underlying contract found")
 
     def on_option_chain_resolved(self, option_chain_data: list[dict]):
         self.logger.info("on_option_chain_resolved() called")
-        self.logger.info(f"Option chain data: {option_chain_data}")
+        # Filter the array of option chains to only include those with the following criteria:
+        # - exchange is SMART
+        # - tradingclass is "SPXW"
+        filtered_option_chain_data = [option for option in option_chain_data if option["exchange"] == "SMART" and option["tradingClass"] == "SPXW"]
+        self.logger.info(f"Filtered option chain data: {filtered_option_chain_data}")
+
+        # calculate two expirations in YYYYMMDD format
+        # today +7 days and today +14 days
+        today = datetime.now()
+        expiration1 = today + timedelta(days=7)
+        expiration2 = today + timedelta(days=14)
+        expiration1_str = expiration1.strftime("%Y%m%d")
+        expiration2_str = expiration2.strftime("%Y%m%d")
+        self.logger.info(f"Expiration 1: {expiration1_str}")
+        self.logger.info(f"Expiration 2: {expiration2_str}")
+
+        # filter the array of option chains to only include those with the following criteria:
+        # - expiration is expiration1_str or expiration2_str
+        filtered_option_chain_data = [option for option in filtered_option_chain_data if option["expirations"] == expiration1_str or option["expiration"] == expiration2_str]
+        self.logger.info(f"Filtered option chain data: {filtered_option_chain_data}")
+
+        # For put legs, resolve contracts for all strikes for both expirations which are lower than the current SPX price
+        

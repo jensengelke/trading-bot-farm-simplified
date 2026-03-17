@@ -310,6 +310,23 @@ class IBConnection(EWrapper, EClient):
             del self.active_subscriptions[con_id]
 
     @trace
+    def get_cached_price(self, con_id: int) -> Optional[Dict[str, Any]]:
+        """
+        Retrieves cached market data for a given conId.
+        """
+        req_id = self.active_subscriptions.get(con_id)
+        if req_id is None:
+            logger.warning(f"No active market data subscription found for conId {con_id}")
+            return None
+        
+        if req_id not in self.market_data:
+            logger.warning(f"No market data cache found for reqId {req_id} (conId: {con_id})")
+            return None
+            
+        return self.market_data.get(req_id)
+
+
+    @trace
     def place_order(self, contract: Contract, order: Order) -> Optional[int]:
         if self.next_order_id is None:
             logger.error("Cannot place order: Not connected or missing nextValidId.")

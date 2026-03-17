@@ -51,6 +51,10 @@ class BaseBot(metaclass=ABCMeta):
 
 
     @trace
+    def subscribe_market_date(self, contract: Contract):
+        self.ib_connection.subscribe_market_data(contract)
+
+    @trace
     def _init_logger(self, config_dir: str):
         """Initializes a dedicated logger for the bot."""
         log_dir = os.path.join("logs", os.path.basename(config_dir))
@@ -102,6 +106,11 @@ class BaseBot(metaclass=ABCMeta):
         pass
 
     @trace
+    def get_cached_price(self, con_id: int):
+        return self.ib_connection.get_cached_price(con_id)
+
+
+    @trace
     def open_order(self, orderId, contract, order, orderState):
         pass
 
@@ -139,7 +148,6 @@ class BaseBot(metaclass=ABCMeta):
             exchange = underlying.exchange
         else:
             exchange = ""
-        
 
         self.logger.info(f"Resolving option chain for {underlying_symbol} (conId: {underlying_conid}, secType: {underlying_secType}, exchange: {exchange})")
         req_id = self.ib_connection.request_option_chain(self, underlying_symbol, exchange, underlying_secType, underlying_conid)
