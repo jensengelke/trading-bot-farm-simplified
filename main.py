@@ -136,17 +136,13 @@ def main():
     logger = logging.getLogger("system")
     logger.setLevel(logging.DEBUG)
     # Console handler for end user (INFO level and up)
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(message)s')
-    console_handler.setFormatter(console_formatter)
     # File handler for system log (DEBUG level for tracing)
     os.makedirs(log_dir, exist_ok=True)
     file_handler = logging.FileHandler(os.path.join(log_dir, "system.log"), mode='a')
     file_handler.setLevel(logging.DEBUG)
     file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
     file_handler.setFormatter(file_formatter)
-    logger.addHandler(console_handler)
+    
     logger.addHandler(file_handler)
 
     config = load_config(args.config_dir, logger)
@@ -160,6 +156,8 @@ def main():
 
     logger.info("Initializing IBConnection layer...")
     ib_conn = IBConnection(host, port, client_id, selected_account)
+    # live frozen     
+    ib_conn.reqMarketDataType(2)
     
     logger.info("Initializing database...")
     db_url = config.get("database", {}).get("url", "sqlite:///data/trading_farm.db")
@@ -174,8 +172,9 @@ def main():
     # Initialize Bot Manager
     bot_manager = BotManager(args.config_dir, ib_conn, logger)
     bot_manager.discover_and_load_bots()
-    for bot in bot_manager.bots.values():
-        ib_conn.register_listener(bot)
+    # TODO: add back when implementing listeners for account events
+    # for bot in bot_manager.bots.values():
+    #    ib_conn.register_listener(bot)
 
     # Automatically attempt connection before syncing so we can fetch API data
     if selected_account:

@@ -3,11 +3,12 @@ import threading
 import logging
 from typing import Optional, Dict, Any
 
-
+from ibapi.ticktype import TickTypeEnum
 from ibapi.client import EClient
 from ibapi.wrapper import EWrapper
 from ibapi.contract import Contract
 from ibapi.order import Order
+from ibapi.order_state import OrderState
 from ibapi.execution import ExecutionFilter, Execution
 from ibapi.scanner import ScannerSubscription
 from decimal import Decimal
@@ -24,6 +25,8 @@ class IBConnection(EWrapper, EClient):
     @trace
     def __init__(self, host: str, port: int, client_id: int, selected_account: str = ""):
         EClient.__init__(self, self)
+        
+        self.logger = logger
         
         self._host = host
         self._port = port
@@ -45,8 +48,7 @@ class IBConnection(EWrapper, EClient):
         self._connected_event = threading.Event()
         self.api_thread: Optional[threading.Thread] = None
         
-        self.listeners = []
-        self.request_listeners: Dict[int, Any] = {} # reqId -> listener for a specific request
+        self.request_listeners: Dict[int, list] = {} # reqId -> listener for a specific request
         # Subscriptions tracking
         self.req_id_counter = 1000
         self.active_subscriptions: Dict[int, int] = {}  # conId -> reqId
@@ -108,7 +110,8 @@ class IBConnection(EWrapper, EClient):
         super().error(reqId, errorTime, errorCode, errorString, advancedOrderRejectJson)
 
         if reqId in self.request_listeners:
-            self.request_listeners[reqId].error(reqId, errorCode, errorString)
+            for listener in self.request_listeners[reqId]:
+                listener.error(reqId, errorCode, errorString)
 
         # IB produces many informational "errors". Only log important ones as actual errors.
         if errorCode in [2104, 2106, 2158]:
@@ -117,8 +120,19 @@ class IBConnection(EWrapper, EClient):
             logger.error(f"IB Error [{errorCode}]: {errorString}")
 
     @trace
-    def register_listener(self, listener):
-        self.listeners.append(listener)
+    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState):
+        super().openOrder(orderId, contract, order, orderState)
+        self.logger.info(f"openOrder. orderId: {orderId}, contract: {contract}, order: {order}")
+
+    @trace
+    def orderStatus(self, orderId: int, status: str, filled: Decimal, remaining: Decimal, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
+        super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+        self.logger.info(f"orderId: {orderId}, status: {status}, filled: {filled}, remaining: {remaining}, avgFillPrice: {avgFillPrice}, permId: {permId}, parentId: {parentId}, lastFillPrice: {lastFillPrice}, clientId: {clientId}, whyHeld: {whyHeld}, mktCapPrice: {mktCapPrice}")
+
+    @trace
+    def execDetails(self, reqId: int, contract: Contract, execution: Execution):
+        super().execDetails(reqId, contract, execution)
+        self.logger.info(f"execDetails. reqId: {reqId}, contract: {contract}, execution: {execution}")
 
     @trace
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib):
@@ -126,8 +140,35 @@ class IBConnection(EWrapper, EClient):
         if reqId not in self.market_data:
             self.market_data[reqId] = {}
         self.market_data[reqId][tickType] = price
-        for listener in self.listeners:
-            listener.tick_price(reqId, tickType, price, attrib)
+        if reqId in self.request_listeners:
+            for listener in self.request_listeners[reqId]:
+                tick_name = TickTypeEnum.toStr(tickType)
+                logger.debug(f"Tick price received for reqId {reqId}: {tick_name} = {price}")
+                listener.tick_price(reqId, tick_name, price, attrib)
+
+    @trace
+    def tickOptionComputation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
+        super().tickOptionComputation(reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice)
+        
+        greeks = {
+            "impliedVol": impliedVol, "delta": delta, "optPrice": optPrice,
+            "pvDividend": pvDividend, "gamma": gamma, "vega": vega,
+            "theta": theta, "undPrice": undPrice
+        }
+
+        if reqId not in self.market_data:
+            self.market_data[reqId] = {}
+        self.market_data[reqId]["greeks"] = greeks
+
+        if reqId in self.request_listeners:
+            for listener in self.request_listeners[reqId]:
+                tick_name = TickTypeEnum.toStr(tickType)
+                self.logger.debug(f"Tick option computation for reqId {reqId}: {tick_name} - {greeks}")
+                if hasattr(listener, "tick_option_computation"):
+                    listener.tick_option_computation(
+                        reqId, tickType, tickAttrib, impliedVol, delta,
+                        optPrice, pvDividend, gamma, vega, theta, undPrice
+                    )
 
     @trace
     def position(self, account: str, contract: Contract, position: Decimal, avgCost: float):
@@ -165,7 +206,7 @@ class IBConnection(EWrapper, EClient):
         self.account_data[accountName][curr_key][key] = val
 
     @trace
-    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState):
+    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState):
         super().openOrder(orderId, contract, order, orderState)
         # Account context protection
         if self.selected_account and order.account and order.account != self.selected_account:
@@ -176,8 +217,7 @@ class IBConnection(EWrapper, EClient):
             "order": order,
             "state": orderState.status
         }
-        for listener in self.listeners:
-            listener.open_order(orderId, contract, order, orderState)
+
     
     @trace
     def orderStatus(self, orderId: int, status: str, filled: Decimal, remaining: Decimal, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
@@ -188,8 +228,7 @@ class IBConnection(EWrapper, EClient):
             self.orders_data[orderId]["filled"] = filled
             self.orders_data[orderId]["remaining"] = remaining
             self.orders_data[orderId]["avgFillPrice"] = avgFillPrice
-        for listener in self.listeners:
-            listener.order_status(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+
 
     @trace
     def execDetails(self, reqId: int, contract: Contract, execution: Execution):
@@ -204,8 +243,7 @@ class IBConnection(EWrapper, EClient):
             "contract": contract,
             "execution": execution
         })
-        for listener in self.listeners:
-            listener.exec_details(reqId, contract, execution)
+
 
     @trace
     def execDetailsEnd(self, reqId: int):
@@ -234,56 +272,50 @@ class IBConnection(EWrapper, EClient):
     def contractDetails(self, reqId: int, contractDetails):
         super().contractDetails(reqId, contractDetails)
         if reqId in self.request_listeners:
-            self.request_listeners[reqId].contractDetails(reqId, contractDetails)
+            for listener in self.request_listeners[reqId]:
+                listener.contractDetails(reqId, contractDetails)
             return
 
         if reqId not in self.contract_details_data:
             self.contract_details_data[reqId] = []
         self.contract_details_data[reqId].append(contractDetails)
-        for listener in self.listeners:
-            listener.contractDetails(reqId, contractDetails)
 
     @trace
     def contractDetailsEnd(self, reqId: int):
         super().contractDetailsEnd(reqId)
         if reqId in self.request_listeners:
-            listener = self.request_listeners.pop(reqId)
-            listener.contractDetailsEnd(reqId)
+            for listener in self.request_listeners[reqId]:
+                listener.contractDetailsEnd(reqId)
+            del self.request_listeners[reqId]
             return
 
         if reqId in self.contract_details_events:
             self.contract_details_events[reqId].set()
-        for listener in self.listeners:
-            listener.contractDetailsEnd(reqId)
 
     @trace
     def securityDefinitionOptionParameter(self, reqId: int, exchange: str, underlyingConId: int, tradingClass: str, multiplier: str, expirations: set, strikes: set):
         logger.info(f"Security definition option parameter received for reqId {reqId}")
         super().securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
         if reqId in self.request_listeners:
-            self.request_listeners[reqId].securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
+            for listener in self.request_listeners[reqId]:
+                listener.securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
             return
-
-        for listener in self.listeners:
-            listener.securityDefinitionOptionParameter(reqId, exchange, underlyingConId, tradingClass, multiplier, expirations, strikes)
 
     @trace
     def securityDefinitionOptionParameterEnd(self, reqId: int):
         logger.info(f"Security definition option parameter end received for reqId {reqId}")
         super().securityDefinitionOptionParameterEnd(reqId)
         if reqId in self.request_listeners:
-            listener = self.request_listeners.pop(reqId)
-            listener.securityDefinitionOptionParameterEnd(reqId)
+            for listener in self.request_listeners[reqId]:
+                listener.securityDefinitionOptionParameterEnd(reqId)
+            del self.request_listeners[reqId]
             return
-
-        for listener in self.listeners:
-            listener.securityDefinitionOptionParameterEnd(reqId)
 
 
     # --- API Action Methods (Outgoing Requests) ---
 
     @trace
-    def subscribe_market_data(self, contract: Contract) -> Optional[int]:
+    def subscribe_market_data(self, listener: Any, contract: Contract, generic_tick_list: str = "") -> Optional[int]:
         con_id = contract.conId
         if not con_id:
             logger.error(f"Cannot subscribe to market data: Invalid or missing conId for {contract.symbol}")
@@ -291,23 +323,31 @@ class IBConnection(EWrapper, EClient):
             
         # Multiplex check
         if con_id in self.active_subscriptions:
+            req_id = self.active_subscriptions[con_id]
             logger.debug(f"Already multiplexing market data for conId {con_id}.")
-            return self.active_subscriptions[con_id]
+            if listener not in self.request_listeners.get(req_id, []):
+                self.request_listeners.setdefault(req_id, []).append(listener)
+            return req_id
 
         req_id = self.get_next_req_id()
         self.active_subscriptions[con_id] = req_id
+        self.request_listeners[req_id] = [listener]
         logger.info(f"Subscribing to market data for {contract.symbol} (conId: {con_id}, ReqId: {req_id})")
         self.reqMktData(req_id, contract, "", False, False, [])
         return req_id
 
     @trace
-    def unsubscribe_market_data(self, contract: Contract):
+    def unsubscribe_market_data(self, listener: Any, contract: Contract):
         con_id = contract.conId
         req_id = self.active_subscriptions.get(con_id)
         if req_id is not None:
-            logger.info(f"Unsubscribing from market data for {contract.symbol} (conId: {con_id}, ReqId: {req_id})")
-            self.cancelMktData(req_id)
-            del self.active_subscriptions[con_id]
+            if req_id in self.request_listeners and listener in self.request_listeners[req_id]:
+                self.request_listeners[req_id].remove(listener)
+                if not self.request_listeners[req_id]: # if no more listeners for this req_id
+                    logger.info(f"Unsubscribing from market data for {contract.symbol} (conId: {con_id}, ReqId: {req_id})")
+                    self.cancelMktData(req_id)
+                    del self.active_subscriptions[con_id]
+                    del self.request_listeners[req_id]
 
     @trace
     def get_cached_price(self, con_id: int) -> Optional[Dict[str, Any]]:
@@ -335,7 +375,7 @@ class IBConnection(EWrapper, EClient):
         order_id = self.next_order_id
         self.next_order_id += 1
         
-        logger.info(f"Placing Order {order_id} for {contract.symbol}: {order.action} {order.totalQuantity}")
+        logger.info(f"Placing Order {order_id} for {contract.symbol}: {order.action} {order.totalQuantity} with orderRef: {order.orderRef if hasattr(order, 'orderRef') and order.orderRef else 'N/A'}")
         self.placeOrder(order_id, contract, order)
         return order_id
 
@@ -375,7 +415,7 @@ class IBConnection(EWrapper, EClient):
     @trace
     def request_contract_details(self, listener: Any, contract: Contract) -> int:
         req_id = self.get_next_req_id()
-        self.request_listeners[req_id] = listener
+        self.request_listeners[req_id] = [listener]
         logger.info(f"Requesting contract details for {contract.symbol} (ReqId: {req_id})")
         self.reqContractDetails(req_id, contract)
         return req_id
@@ -383,7 +423,7 @@ class IBConnection(EWrapper, EClient):
     @trace
     def request_option_chain(self, listener: Any, underlying_symbol: str, exchange: str, sec_type: str, conid: int) -> int:
         req_id = self.get_next_req_id()
-        self.request_listeners[req_id] = listener
+        self.request_listeners[req_id] = [listener]
         logger.info(f"Requesting option chain for {underlying_symbol} (ReqId: {req_id})")
         self.reqSecDefOptParams(req_id, underlying_symbol, exchange, sec_type, conid)
         return req_id

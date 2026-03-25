@@ -2,10 +2,12 @@ import logging
 import os
 from abc import ABCMeta, abstractmethod
 from ibapi.contract import Contract
+from ibapi.order import Order
 from src.bots.config_base import ConfigBase
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
 from src.utils import trace
+from typing import Optional
 
 class BaseBotFilter(logging.Filter):
     """
@@ -51,8 +53,12 @@ class BaseBot(metaclass=ABCMeta):
 
 
     @trace
-    def subscribe_market_date(self, contract: Contract):
-        self.ib_connection.subscribe_market_data(contract)
+    def subscribe_market_data(self, contract: Contract, generic_tick_list: str = "") -> Optional[int]:
+        return self.ib_connection.subscribe_market_data(self, contract, generic_tick_list)
+
+    @trace
+    def unsubscribe_market_data(self, contract: Contract):
+        self.ib_connection.unsubscribe_market_data(self, contract)
 
     @trace
     def _init_logger(self, config_dir: str):
@@ -98,6 +104,10 @@ class BaseBot(metaclass=ABCMeta):
         pass
 
     @trace
+    def tick_option_computation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
+        pass
+
+    @trace
     def order_status(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
         pass
 
@@ -108,6 +118,15 @@ class BaseBot(metaclass=ABCMeta):
     @trace
     def get_cached_price(self, con_id: int):
         return self.ib_connection.get_cached_price(con_id)
+
+    @trace
+    def place_order(self, contract: Contract, order: Order) -> Optional[int]:
+        if hasattr(order, "orderRef") and order.orderRef:
+            order.orderRef = f"{self.config.bot_name} - {order.orderRef}"
+        else:
+            order.orderRef = self.config.bot_name
+
+        return self.ib_connection.place_order(contract, order)
 
 
     @trace
@@ -131,7 +150,7 @@ class BaseBot(metaclass=ABCMeta):
             request_context = self._contract_resolution_requests[reqId]
             request_context["status"].complete = True
             del self._contract_resolution_requests[reqId]
-            request_context["callback"](request_context["result_contracts"])
+            request_context["callback"](request_context["status"], request_context["result_contracts"])
 
     @trace
     def error(self, reqId, errorCode, errorString):
@@ -196,6 +215,7 @@ class BaseBot(metaclass=ABCMeta):
 
     @trace
     def securityDefinitionOptionParameterEnd(self, reqId: int):
+        self.logger.info(f"Option chain resolution for reqId {reqId} completed.")
         if reqId in self._option_chain_resolution_requests:
             context = self._option_chain_resolution_requests.pop(reqId)
             if context["timer_id"]:
