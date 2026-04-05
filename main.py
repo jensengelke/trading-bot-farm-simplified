@@ -167,7 +167,7 @@ def main():
 
     logger.info("Initializing Sync Manager...")
     flex_service = FlexQueryService()
-    sync_manager = SyncManager(repository, flex_service, ib_conn)
+    sync_manager = SyncManager(repository, flex_service, ib_conn, config=config)
 
     # Initialize Bot Manager
     bot_manager = BotManager(args.config_dir, ib_conn, logger)

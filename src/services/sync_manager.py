@@ -18,11 +18,11 @@ logger = logging.getLogger("system")
 
 class SyncManager:
     @trace
-    def __init__(self, repository: Repository, flex_service: FlexQueryService, ib_conn=None):
+    def __init__(self, repository: Repository, flex_service: FlexQueryService, ib_conn=None, config=None):
         self.repo = repository
         self.flex_service = flex_service
         self.ib_conn = ib_conn
-        self.config = load_config()
+        self.config = config if config is not None else load_config()
         self._lock = threading.Lock()
 
     @trace
@@ -103,16 +103,21 @@ class SyncManager:
                     
                 else:
                     # Ongoing daily/incremental sync
-                    if last_flex_date >= today:
+                    if last_flex_date >= yesterday:
                         logger.info(f"Flex data for account {account_id} is already up to date (last sync: {last_flex_date}). Skipping Flex Query.")
                     else:
-                        logger.info(f"Last Flex sync was {last_flex_date}. Requesting incremental update.")
+                        # We start checking from the day AFTER the last sync, but if there's overlap it's fine 
+                        # because our repository handles upserts
+                        logger.info(f"Last Flex sync was {last_flex_date}. Requesting incremental update up to {yesterday}.")
                         xml_data, effective_start, effective_end = self.flex_service.download_flex_data(token, query_id, start_date=last_flex_date, end_date=yesterday)
                         if xml_data:
                             self._process_flex_xml(xml_data, account_id, effective_start, effective_end)
-                            self.repo.update_sync_state(account_id, last_date=datetime.now())
+                            # Update to the last date of the requested block (as a datetime at midnight to match column type)
+                            new_last_date = datetime.combine(effective_end if effective_end else yesterday, datetime.min.time())
+                            self.repo.update_sync_state(account_id, last_date=new_last_date)
                         else:
-                            logger.info(f"No new Flex Data to process for {account_id}.")
+                            logger.info(f"No new Flex Data to process for {account_id}. Not advancing sync date.")
+
             
             # 5. API Sync for today's data
             self._sync_api_executions(account_id)

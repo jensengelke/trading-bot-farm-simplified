@@ -184,7 +184,7 @@ class DoubleCalendarBot(BaseBot):
         # today +7 days and today +14 days
         today = datetime.now()
         
-        expiration1 = today + timedelta(days=7)
+        expiration1 = today + timedelta(days=5)
         expiration2 = today + timedelta(days=10)
         if expiration2.weekday() == 5:
             expiration2 += timedelta(days=2)
