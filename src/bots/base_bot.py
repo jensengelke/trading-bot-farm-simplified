@@ -39,6 +39,42 @@ class BaseBot(metaclass=ABCMeta):
 
         self._contract_resolution_requests = {}
         self._option_chain_resolution_requests = {}
+        self._historical_data_requests = {}
+
+    @trace
+    def request_historical_data(self, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int, keep_up_to_date: bool, callback_historical_data_end, callback_historical_data_update=None) -> int:
+        req_id = self.ib_connection.request_historical_data(self, contract, end_datetime, duration, bar_size, what_to_show, use_rth, keep_up_to_date)
+        self._historical_data_requests[req_id] = {
+            "keep_up_to_date": keep_up_to_date,
+            "callback_historical_data_end": callback_historical_data_end,
+            "callback_historical_data_update": callback_historical_data_update
+        }
+        return req_id
+
+    @trace
+    def cancel_historical_data(self, req_id: int):
+        self.ib_connection.cancel_historical_data(req_id)
+        if req_id in self._historical_data_requests:
+            del self._historical_data_requests[req_id]
+
+
+    @trace
+    def historicalDataUpdate(self, reqId: int, bar):
+        if reqId in self._historical_data_requests:
+            request_context = self._historical_data_requests[reqId]
+            if request_context["keep_up_to_date"] and request_context["callback_historical_data_update"]:
+                request_context["callback_historical_data_update"](bar)
+
+    @trace
+    def historicalDataEnd(self, reqId: int, start: str, end: str, bars):
+        if reqId in self._historical_data_requests:
+            request_context = self._historical_data_requests[reqId]
+            if request_context["callback_historical_data_end"]:
+                request_context["callback_historical_data_end"](bars)
+            
+            # Cleanup if not kept up to date
+            if not request_context["keep_up_to_date"]:
+                del self._historical_data_requests[reqId]
 
     @trace
     def resolve_contracts(self, search_contract: Contract, status: ContractResolutionStatus, callback):
@@ -141,7 +177,7 @@ class BaseBot(metaclass=ABCMeta):
     def contractDetails(self, reqId, contractDetails):
         if reqId in self._contract_resolution_requests:
             request_context = self._contract_resolution_requests[reqId]
-            request_context["result_contracts"].append(contractDetails.contract)
+            request_context["result_contracts"].append(contractDetails)
             request_context["status"].total_contracts += 1
 
     @trace

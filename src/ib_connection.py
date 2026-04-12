@@ -42,6 +42,7 @@ class IBConnection(EWrapper, EClient):
         self.execution_events: Dict[int, threading.Event] = {}
         self.contract_details_data: Dict[int, list] = {}
         self.contract_details_events: Dict[int, threading.Event] = {}
+        self.historical_data_config: Dict[int, Dict[str, Any]] = {}
 
         # State and concurrency mapping
         self.next_order_id: Optional[int] = None
@@ -311,6 +312,41 @@ class IBConnection(EWrapper, EClient):
             del self.request_listeners[reqId]
             return
 
+    @trace
+    def historicalData(self, reqId: int, bar):
+        super().historicalData(reqId, bar)
+        if reqId in self.request_listeners:
+            config = self.historical_data_config.get(reqId, {})
+            if 'data' not in config:
+                config['data'] = []
+            config['data'].append(bar)
+
+    @trace
+    def historicalDataUpdate(self, reqId: int, bar):
+        super().historicalDataUpdate(reqId, bar)
+        if reqId in self.request_listeners:
+            for listener in self.request_listeners[reqId]:
+                if hasattr(listener, 'historicalDataUpdate'):
+                    listener.historicalDataUpdate(reqId, bar)
+
+    @trace
+    def historicalDataEnd(self, reqId: int, start: str, end: str):
+        super().historicalDataEnd(reqId, start, end)
+        if reqId in self.request_listeners:
+            config = self.historical_data_config.get(reqId, {})
+            keep_up_to_date = config.get('keep_up_to_date', False)
+            
+            # Dispatch accumulated data to all listeners
+            for listener in self.request_listeners[reqId]:
+                if hasattr(listener, 'historicalDataEnd'):
+                    listener.historicalDataEnd(reqId, start, end, config.get('data', []))
+
+            # Clean up if not keeping the subscription alive
+            if not keep_up_to_date:
+                del self.request_listeners[reqId]
+                if reqId in self.historical_data_config:
+                    del self.historical_data_config[reqId]
+
 
     # --- API Action Methods (Outgoing Requests) ---
 
@@ -429,11 +465,25 @@ class IBConnection(EWrapper, EClient):
         return req_id
 
     @trace
-    def request_historical_data(self, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int = 1, keep_up_to_date: bool = False) -> int:
+    def request_historical_data(self, listener: Any, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int = 1, keep_up_to_date: bool = False) -> int:
         req_id = self.get_next_req_id()
+        self.request_listeners[req_id] = [listener]
+        self.historical_data_config[req_id] = {
+            'keep_up_to_date': keep_up_to_date,
+            'data': []
+        }
         logger.info(f"Requesting historical data for {contract.symbol} (ReqId: {req_id})")
         self.reqHistoricalData(req_id, contract, end_datetime, duration, bar_size, what_to_show, use_rth, 1, keep_up_to_date, [])
         return req_id
+
+    @trace
+    def cancel_historical_data(self, req_id: int):
+        logger.info(f"Canceling historical data for ReqId: {req_id}")
+        self.cancelHistoricalData(req_id)
+        if req_id in self.request_listeners:
+            del self.request_listeners[req_id]
+        if req_id in self.historical_data_config:
+            del self.historical_data_config[req_id]
 
     @trace
     def subscribe_realtime_bars(self, contract: Contract, bar_size: int, what_to_show: str, use_rth: bool = True) -> int:

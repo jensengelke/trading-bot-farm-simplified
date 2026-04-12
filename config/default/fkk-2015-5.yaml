@@ -1,0 +1,11 @@
+bot_name: "fkk-2015-5"
+bot_type: "fkk"
+log_level: "INFO"
+timezone: "America/New_York"
+entry_time: "14:12:30"
+entry_time_observation_period: 300
+delta: 35
+width: 5
+sma_period: 5
+intraday_move_pct: 0.3
+test_mode: true

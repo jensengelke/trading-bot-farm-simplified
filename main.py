@@ -135,7 +135,14 @@ def main():
     # --- Configure system logging according to specification ---
     logger = logging.getLogger("system")
     logger.setLevel(logging.DEBUG)
+    
     # Console handler for end user (INFO level and up)
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_formatter = logging.Formatter('%(message)s')
+    console_handler.setFormatter(console_formatter)
+    logger.addHandler(console_handler)
+
     # File handler for system log (DEBUG level for tracing)
     os.makedirs(log_dir, exist_ok=True)
     file_handler = logging.FileHandler(os.path.join(log_dir, "system.log"), mode='a')

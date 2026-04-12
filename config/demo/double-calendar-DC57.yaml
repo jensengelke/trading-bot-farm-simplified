@@ -1,4 +1,4 @@
 bot_name: "double-calendar-DC57"
 bot_type: "double_calendar"
 log_level: "INFO"
-test_mode: false
+test_mode: true

@@ -7,6 +7,7 @@ from ibapi.ticktype import TickTypeEnum
 from ibapi.order import Order
 from datetime import datetime, timedelta
 import pytz
+import threading
 
 class DoubleCalendarBot(BaseBot):
     def __init__(self, config: DoubleCalendarConfig, ib_connection: IBConnection, timer_manager: TimerManager, config_dir: str):
@@ -18,6 +19,7 @@ class DoubleCalendarBot(BaseBot):
         self.ping_counter = 0
 
         self.underlying = None
+        self.underlying_price = None
         self.underlying_contract_candidates = []
         self.underlying_contract_resolution_status = ContractResolutionStatus()
         self.underlying_market_data_req_id = None
@@ -25,6 +27,7 @@ class DoubleCalendarBot(BaseBot):
         self.pending_contract_resolutions: list[ContractResolutionStatus] = []
         self.option_contracts: list[Contract] = []
         self.option_market_data_req_ids: dict[int, Contract] = {}
+        self.option_market_data_req_ids_lock = threading.Lock()
         self.option_market_data: dict[Contract, str, dict] = {}
         self.option_prices = {}
         self.option_chain_data = []
@@ -33,6 +36,8 @@ class DoubleCalendarBot(BaseBot):
         self.option_timeout_timer_id = None
         self.entry_order_put_req_id = None
         self.entry_order_call_req_id = None
+        self.expiration1_str = None
+        self.expiration2_str = None
 
     def start(self):
         self.logger.info(f"Starting DoubleCalendarBot with config: {self.config.bot_name}")
@@ -60,15 +65,17 @@ class DoubleCalendarBot(BaseBot):
                 self.logger.info(f"Underlying price: {self.underlying_price}")
                 self.unsubscribe_market_data(self.underlying)
                 self.underlying_market_data_req_id = None
+                self.resolve_option_chain(underlying=self.underlying, callback=self.on_option_chain_resolved,timeout=4000)
 
     def tick_option_computation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
         self.logger.info(f"DoubleCalendarBot received tick option computation: {reqId}, {tickType}, {impliedVol}, delta: {delta}, {optPrice}, {pvDividend}, {gamma}, {vega}, {theta}, {undPrice}")
         if not delta is None and reqId in self.option_market_data_req_ids:
-            contract = self.option_market_data_req_ids[reqId]
-            self.option_prices[contract.conId] = self.get_cached_price(contract.conId).copy()
-            self.logger.info(f"cached data: {self.get_cached_price(contract.conId)} stored in {self.option_prices[contract.conId]}")
-            self.unsubscribe_market_data(contract=contract)
-            self.option_market_data_req_ids.pop(reqId)
+            with self.option_market_data_req_ids_lock:
+                contract = self.option_market_data_req_ids[reqId]
+                self.option_prices[contract.conId] = self.get_cached_price(contract.conId).copy()
+                self.logger.info(f"cached data: {self.get_cached_price(contract.conId)} stored in {self.option_prices[contract.conId]}")
+                self.unsubscribe_market_data(contract=contract)
+                self.option_market_data_req_ids.pop(reqId)
         if len(self.option_market_data_req_ids)==0:
             self.logger.info("All Option prices and greeks received")
             self.select_strikes()
@@ -79,14 +86,6 @@ class DoubleCalendarBot(BaseBot):
         self.logger.info(f"DoubleCalendarBot received timer event: {event_name}")
         if event_name == "start":
             self.test_start()
-        elif event_name == "ping":
-            self.test_ping()
-            if self.pinging:
-                # Reschedule the ping timer
-                tz_name = self.config.timezone if hasattr(self.config, "timezone") else "UTC"
-                tz = pytz.timezone(tz_name)
-                trigger_time = (datetime.now(tz) + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
-                self.timer_id = self.timer_manager.add_timer(self.config.bot_name, "ping", self.on_timer, trigger_time=trigger_time)
         elif event_name == "stop":
             self.test_stop()
         elif event_name == "option_price_timeout":
@@ -96,69 +95,42 @@ class DoubleCalendarBot(BaseBot):
 
     def test_start(self):
         self.logger.info("test_start() called")
-        tz_name = self.config.timezone if hasattr(self.config, "timezone") else "UTC"
-        tz = pytz.timezone(tz_name)
-        
-        stop_trigger_time = (datetime.now(tz) + timedelta(seconds=10)).strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
-        self.timer_manager.add_timer(self.config.bot_name, "stop", self.on_timer, trigger_time=stop_trigger_time)
+        underlying = Contract()
+        underlying.symbol = "SPX"
+        underlying.secType = "IND"
+        underlying.exchange = "CBOE"
+        underlying.currency = "USD"
 
-        self.pinging = True
-        ping_trigger_time = (datetime.now(tz) + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
-        self.ping_timer_id = self.timer_manager.add_timer(self.config.bot_name, "ping", self.on_timer, trigger_time=ping_trigger_time)
+        self.resolve_contracts(search_contract=underlying,
+        status=self.underlying_contract_resolution_status,
+        callback=self.on_underlying_contract_resolved)           
 
-    def test_ping(self):
-        self.logger.info(f"test_ping() called, underlying resolution status: {self.underlying_contract_resolution_status.total_contracts}")
-        self.ping_counter += 1
-        self.logger.info(f"ping counter: {self.ping_counter}")
-        if self.ping_counter == 1:
-            underlying = Contract()
-            underlying.symbol = "SPX"
-            underlying.secType = "IND"
-            underlying.exchange = "CBOE"
-            underlying.currency = "USD"
-
-            self.resolve_contracts(search_contract=underlying,
-            status=self.underlying_contract_resolution_status,
-            callback=self.on_underlying_contract_resolved)
-        
-        if self.ping_counter == 3: 
-            self.resolve_option_chain(underlying=self.underlying, 
-                                    callback=self.on_option_chain_resolved,
-                                    timeout=4000)
-            
-    def test_stop(self):
-        self.logger.info("test_stop() called")
-        self.pinging = False
-        self.logger.info(f"timer id: {self.ping_timer_id}")
-        if self.ping_timer_id:
-            self.timer_manager.remove_timer(self.ping_timer_id)
-            self.ping_timer_id = None
-
-    def on_underlying_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[Contract]):
+    def on_underlying_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
         self.logger.info("on_underlying_contract_resolved() called")
         self.logger.info(f"Underlying contract candidates: {result_contracts}")
         if len(result_contracts) > 0:
-            self.underlying = result_contracts[0]
+            self.underlying = result_contracts[0].contract
             self.logger.info(f"Selected underlying contract: {self.underlying}")
             self.underlying_market_data_req_id = self.subscribe_market_data(self.underlying)
         else:
             self.logger.error("No underlying contract found")
 
-    def on_option_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[Contract]):
+    def on_option_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
         self.logger.info("on_option_contract_resolved() called")
         self.logger.info(f"Option contract resolved: {result_contracts}")
-        self.logger.info(f"TradingClass {result_contracts[0].tradingClass}")
+        self.logger.info(f"TradingClass {result_contracts[0].contract.tradingClass}")
         if status in self.pending_contract_resolutions:
             self.pending_contract_resolutions.remove(status)
             # subscribe to market data for the resolved contract
-            req_id = self.subscribe_market_data(result_contracts[0], "10,11,12,13,101,106")
-            self.option_contracts.append(result_contracts[0])
-            self.option_market_data_req_ids[req_id] = result_contracts[0]
+            req_id = self.subscribe_market_data(result_contracts[0].contract, "10,11,12,13,101,106")
+            self.option_contracts.append(result_contracts[0].contract)
+            self.option_market_data_req_ids[req_id] = result_contracts[0].contract
 
         if len(self.pending_contract_resolutions) == 0:
             self.logger.info("All option contracts resolved")
+            if result_contracts[0].contract.lastTradeDateOrContractMonth == self.expiration2_str:
+                self.logger.info("resolved all expiration2 contracts")
         
-
     def _resolve_option_contracts(self, strikes: list[float], right: str, expiration_str: str):
         for strike in strikes:
             c = Contract()
@@ -184,16 +156,16 @@ class DoubleCalendarBot(BaseBot):
         # today +7 days and today +14 days
         today = datetime.now()
         
-        expiration1 = today + timedelta(days=5)
+        expiration1 = today + timedelta(days=7)
         expiration2 = today + timedelta(days=10)
         if expiration2.weekday() == 5:
             expiration2 += timedelta(days=2)
         elif expiration2.weekday() == 6:
             expiration2 += timedelta(days=1)
-        expiration1_str = expiration1.strftime("%Y%m%d")
-        expiration2_str = expiration2.strftime("%Y%m%d")
-        self.logger.info(f"Expiration 1: {expiration1_str}")
-        self.logger.info(f"Expiration 2: {expiration2_str}")
+        self.expiration1_str = expiration1.strftime("%Y%m%d")
+        self.expiration2_str = expiration2.strftime("%Y%m%d")
+        self.logger.info(f"Expiration 1: {self.expiration1_str}")
+        self.logger.info(f"Expiration 2: {self.expiration2_str}")
 
         # filter the array of option chains to only include those with the following criteria:
         # - expiration contains expiration1_str or expiration2_str
@@ -201,12 +173,17 @@ class DoubleCalendarBot(BaseBot):
         # - tradingclass is "SPXW"
 
         filtered_option_chain_data = [option for option in option_chain_data 
-                                    if (expiration1_str in option["expirations"] or expiration2_str in option["expirations"]) and 
+                                    if (self.expiration1_str in option["expirations"] or self.expiration2_str in option["expirations"]) and 
                                     option["exchange"] == "CBOE" and 
                                     option["tradingClass"] == "SPXW"]
         self.logger.info(f"Filtered option chain data: {filtered_option_chain_data}")
 
         self.option_contract_resolutions = {}
+
+        if self.underlying_price is None:
+            self.logger.warning("Underlying price is not available. Cannot resolve option chains.")
+            return
+
         if resolve_puts:
             self.logger.info(f"Resolving put contracts")
             # For put legs, resolve contracts for all strikes for both expirations which are lower than the current SPX price
@@ -217,7 +194,7 @@ class DoubleCalendarBot(BaseBot):
             put_strikes = sorted([strike for strike in filtered_option_chain_data[0]["strikes"] if strike < self.highest_put_strike], reverse=True)[:10]
             self.logger.info(f"Put Strikes: {put_strikes}")
             self.highest_put_strike = put_strikes[-1]
-            self._resolve_option_contracts(put_strikes, "P", expiration1_str)
+            self._resolve_option_contracts(put_strikes, "P", self.expiration1_str)
 
         if resolve_calls:
             self.logger.info(f"Resolving call contracts")
@@ -229,7 +206,7 @@ class DoubleCalendarBot(BaseBot):
             call_strikes = sorted([strike for strike in filtered_option_chain_data[0]["strikes"] if strike > self.lowest_call_strike], reverse=False)[:10]
             self.logger.info(f"Call Strikes: {call_strikes}")
             self.lowest_call_strike = call_strikes[-1]
-            self._resolve_option_contracts(call_strikes, "C", expiration1_str)
+            self._resolve_option_contracts(call_strikes, "C", self.expiration1_str)
 
         # schedule a timer as timeout of option price retrieval for 5 seconds
         tz_name = self.config.timezone if hasattr(self.config, "timezone") else "UTC"
@@ -237,7 +214,6 @@ class DoubleCalendarBot(BaseBot):
         timeout_trigger_time = (datetime.now(tz) + timedelta(seconds=5)).strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
         self.option_timeout_timer_id = self.timer_manager.add_timer(self.config.bot_name, "option_price_timeout", self.on_timer, trigger_time=timeout_trigger_time)
          
-
     def select_strikes(self):
         self.logger.info("select_strikes() ENTRY")
         # cancel the timeout timer
@@ -295,15 +271,36 @@ class DoubleCalendarBot(BaseBot):
         self.logger.info(f"Closest put contract: {closest_put_contract.strike} with delta {closest_put_delta}")
         self.logger.info(f"Closest call contract: {closest_call_contract.strike} with delta {closest_call_delta}")
 
-        self.place_entry_order(closest_put_contract)
-        self.place_entry_order(closest_call_contract)
+        put_strikes = {closest_put_contract.strike}
+        call_strikes = {closest_call_contract.strike}
+
+        self._resolve_option_contracts(put_strikes, "P", self.expiration2_str)
+        self._resolve_option_contracts(call_strikes, "C", self.expiration2_str)
+        
         
 
     def place_entry_order(self, contract: Contract):
-        order = Order()
-        order.action = "SELL"
-        order.orderType = "LMT"
-        order.totalQuantity = 1
+        combo_order = Order()
+        combo_order.symbol = "SPX"
+        combo_order.secType = "BAG"
+        combo_order.action = "BUY"
+        combo_order.orderType = "LMT"
+        combo_order.totalQuantity = 1
+
+        leg1 = ComboLeg()
+        leg1.conId = self.put_contract.conId
+        leg1.ratio = 1
+        leg1.action = "SELL"
+        leg1.exchange = "SMART"
+
+        leg2 = ComboLeg()
+        leg2.conId = self.call_contract.conId
+        leg2.ratio = 1
+        leg2.action = "BUY"
+        leg2.exchange = "SMART"
+
+        combo_order.legs = [leg1, leg2]
+
         # get bid/ask from self.option_prices
         price_data = self.option_prices.get(contract.conId)
         if price_data:
@@ -342,9 +339,10 @@ class DoubleCalendarBot(BaseBot):
 
     def on_option_price_timeout(self):
         self.logger.info("on_option_price_timeout() called")
-        self.logger.info(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
-        for req_id in self.option_market_data_req_ids:
-            # TODO: do I need to repeat?
-            self.unsubscribe_market_data(self.option_market_data_req_ids[req_id])
-        self.option_market_data_req_ids = {}
+        with self.option_market_data_req_ids_lock:
+            self.logger.info(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
+            for req_id in self.option_market_data_req_ids:
+                # TODO: do I need to repeat?
+                self.unsubscribe_market_data(self.option_market_data_req_ids[req_id])
+            self.option_market_data_req_ids = {}
         self.select_strikes()

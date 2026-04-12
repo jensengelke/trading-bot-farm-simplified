@@ -1,0 +1,7 @@
+bot_name: "ping_bot_sample"
+bot_type: "ping_bot"
+log_level: "INFO"
+timezone: "Europe/Berlin"
+start_in_seconds: 2
+ping_interval_seconds: 2
+stop_after_pings: 4
