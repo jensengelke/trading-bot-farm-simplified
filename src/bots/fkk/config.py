@@ -9,3 +9,4 @@ class FkkConfig(ConfigBase):
     sma_period: int = 5
     intraday_move_pct: float = 0.3
     test_mode: bool = False
+    force_open_position: bool = False

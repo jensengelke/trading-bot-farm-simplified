@@ -3,7 +3,7 @@ from src.bots.fkk.config import FkkConfig
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
 from ibapi.contract import Contract, ContractDetails
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import pytz
 import threading
 
@@ -14,6 +14,12 @@ class FkkBot(BaseBot):
         self.underlying_contract_resolution_status: ContractResolutionStatus = None
         self.historical_bars = []
         self.historical_data_req_id: int = None
+        self.option_chain_data = {}
+        self.option_contracts = []
+        self.option_prices = {}
+        self.pending_contract_resolutions: list[ContractResolutionStatus] = []
+        self.option_market_data_req_ids: dict[int, Contract] = {}
+        self.option_market_data_req_ids_lock = threading.Lock()
 
     def start(self):
         self.logger.info(f"Starting FkkBot with config: {self.config.bot_name}")
@@ -89,7 +95,6 @@ class FkkBot(BaseBot):
                 keep_up_to_date=True, 
                 callback_historical_data_end=self.on_historical_data_end, 
                 callback_historical_data_update=self.on_historical_data_update)
-            #self.resolve_option_chain(underlying=self.underlying_contract, callback=self.on_option_chain_resolved, timeout=4000)
         else:
             self.logger.error(f"Failed to resolve underlying contract: {status.errors}")
 
@@ -126,11 +131,146 @@ class FkkBot(BaseBot):
         self.logger.info(f"Close: {close}, Open: {open_price}, Percent move: {(close - open_price) / open_price * 100:.2f}%, SMA({self.config.sma_period}): {sma}")
 
         # Evaluate conditions
-        if close > sma and close > (1 + self.config.intraday_move_pct / 100) * open_price:
+        entry_conditions_met = close > sma and close > (1 + self.config.intraday_move_pct / 100) * open_price
+        if entry_conditions_met or self.config.force_open_position:
             self.logger.info("Entry conditions are met.")
+            self.on_entry_conditions_are_met()
         else:
             self.logger.info("Entry conditions are not met.")
     
+    def on_entry_conditions_are_met(self):
+        self.logger.info("on_entry_conditions_are_met() called")
+        self.resolve_option_chain(underlying=self.underlying_contract, callback=self.on_option_chain_resolved,timeout=4000)
+
+    def on_option_chain_resolved(self, result: dict):
+        self.logger.info("on_option_chain_resolved() called")
+        
+        # Filter for CBOE and SPXW
+        cboe_data = None
+        for exchange_data in result:
+            if exchange_data['exchange'] == 'CBOE' and exchange_data['tradingClass'] == 'SPXW':
+                cboe_data = exchange_data
+                break
+        
+        if not cboe_data:
+            self.logger.error("No option chain data found for CBOE with trading class SPXW.")
+            return
+
+        self.option_chain_data = cboe_data
+
+        today = date.today()
+        if self.config.test_mode:
+            if today.weekday() >= 5: # Monday is 0 and Sunday is 6
+                today += timedelta(days=7 - today.weekday())
+
+        expiration_str = today.strftime("%Y%m%d")
+        self.logger.info(f"Looking for options with expiration: {expiration_str}")
+
+        if expiration_str in self.option_chain_data['expirations']:
+            strikes = list(self.option_chain_data['strikes'])
+            # for now, just take 10 strikes around the money
+            underlying_price = self.historical_bars[-1].close
+            strikes.sort(key=lambda x: abs(x - underlying_price))
+            put_strikes = strikes[:10]
+            self.logger.info(f"Found {len(put_strikes)} strikes for expiration {expiration_str}. Resolving puts.")
+            self._resolve_option_contracts(put_strikes, "P", expiration_str)
+        else:
+            self.logger.error(f"Expiration {expiration_str} not found in option chain. Available expirations: {self.option_chain_data['expirations']}")
+
+    def _resolve_option_contracts(self, strikes: set, right: str, expiration: str):
+        self.logger.info(f"_resolve_option_contracts() ENTRY with {len(strikes)} strikes, right: {right}, expiration: {expiration}")
+        for strike in strikes:
+            contract = Contract()
+            contract.symbol = self.underlying_contract.symbol
+            contract.secType = "OPT"
+            contract.exchange = "SMART"
+            contract.currency = self.underlying_contract.currency
+            contract.lastTradeDateOrContractMonth = expiration
+            contract.strike = strike
+            contract.right = right
+            
+            status = ContractResolutionStatus()
+            self.resolve_contracts(search_contract=contract, status=status, callback=self.on_option_contract_resolved)
+            self.pending_contract_resolutions.append(status)
+
+    def on_option_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
+        self.logger.info("on_option_contract_resolved() called")
+        if status.complete and len(result_contracts) == 1:
+            contract = result_contracts[0].contract
+            self.logger.info(f"Option contract resolved: {contract}")
+
+            if status in self.pending_contract_resolutions:
+                self.pending_contract_resolutions.remove(status)
+                # subscribe to market data for the resolved contract
+                req_id = self.subscribe_market_data(contract, "10,11,12,13,101,106")
+                self.option_contracts.append(contract)
+                self.option_market_data_req_ids[req_id] = contract
+        else:
+             self.logger.error(f"Failed to resolve option contract: {status.errors}")
+             if status in self.pending_contract_resolutions:
+                self.pending_contract_resolutions.remove(status)
+
+        if len(self.pending_contract_resolutions) == 0:
+            self.logger.info("All option contracts resolutions requests are done.")
+
+    def tick_option_computation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
+        self.logger.info(f"FkkBot received tick option computation: {reqId}, {tickType}, {impliedVol}, delta: {delta}, {optPrice}, {pvDividend}, {gamma}, {vega}, {theta}, {undPrice}")
+        if not delta is None and reqId in self.option_market_data_req_ids:
+            with self.option_market_data_req_ids_lock:
+                if reqId in self.option_market_data_req_ids:
+                    contract = self.option_market_data_req_ids[reqId]
+                    self.option_prices[contract.conId] = self.get_cached_price(contract.conId).copy()
+                    self.logger.info(f"cached data: {self.get_cached_price(contract.conId)} stored in {self.option_prices[contract.conId]}")
+                    self.unsubscribe_market_data(contract=contract)
+                    del self.option_market_data_req_ids[reqId]
+
+        if len(self.option_market_data_req_ids)==0:
+            self.logger.info("All Option prices and greeks received")
+            self.select_strike()
+        else:
+            self.logger.info(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
+
+    def select_strike(self):
+        self.logger.info("select_strike() ENTRY")
+        
+        put_contracts = {}
+
+        for c in self.option_contracts:
+            price_data = self.option_prices.get(c.conId)
+            if price_data is None:
+                self.logger.info(f"No price data found for contract {c.conId}")
+                continue
+            if c.right == "P":
+                if 'greeks' in price_data and price_data['greeks'] is not None and 'delta' in price_data['greeks'] and price_data['greeks']['delta'] is not None:
+                    put_contracts[price_data['greeks']['delta']] = c
+        
+        highest_put_delta = -1
+        for delta in put_contracts.keys():
+            if delta > highest_put_delta:
+                highest_put_delta = delta
+        
+        self.logger.info(f"Highest put delta: {highest_put_delta}")
+
+        if highest_put_delta < (-1 * self.config.delta):
+             self.on_option_chain_resolved(self.option_chain_data)
+             return
+        
+        self.logger.info("We can select a strike now.")
+        # Find the strike with delta closest to -0.16 for puts
+        closest_put_distance=1
+        closest_put_contract=None
+        closest_put_delta = None
+        for delta, contract in put_contracts.items():
+            if abs(delta - (self.config.delta)) < closest_put_distance:
+                closest_put_delta = delta
+                closest_put_distance = abs(delta - (-1 * self.config.delta))
+                closest_put_contract = contract
+
+        if closest_put_contract is not None:
+            self.logger.info(f"Closest put contract: {closest_put_contract.strike} with delta {closest_put_delta}")
+        else:
+            self.logger.info("Could not find a suitable put contract.")
+
     def on_stop_confirm_entry_conditions(self):
         self.logger.info("on_stop_confirm_entry_conditions() called")
         if self.historical_data_req_id is not None:

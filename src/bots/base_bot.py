@@ -256,4 +256,6 @@ class BaseBot(metaclass=ABCMeta):
             context = self._option_chain_resolution_requests.pop(reqId)
             if context["timer_id"]:
                 self.timer_manager.remove_timer(context["timer_id"])
+
+            self.logger.error(f"Calling callback {context['callback']} with data {context['data']}")
             context["callback"](context["data"])
