@@ -12,6 +12,7 @@ import glob
 
 # Ensure the local src folder is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from src.logging_config import setup_logging, setup_system_logging
 from src.ib_connection import IBConnection
 from src.db.database import Base, init_db
 import src.db.database as db
@@ -132,25 +133,9 @@ def main():
     log_dir = os.path.join("logs", config_dir_name)
     roll_log_files(log_dir)
 
-    # --- Configure system logging according to specification ---
-    logger = logging.getLogger("system")
-    logger.setLevel(logging.DEBUG)
-    
-    # Console handler for end user (INFO level and up)
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter('%(message)s')
-    console_handler.setFormatter(console_formatter)
-    logger.addHandler(console_handler)
-
-    # File handler for system log (DEBUG level for tracing)
-    os.makedirs(log_dir, exist_ok=True)
-    file_handler = logging.FileHandler(os.path.join(log_dir, "system.log"), mode='a')
-    file_handler.setLevel(logging.DEBUG)
-    file_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-    file_handler.setFormatter(file_formatter)
-    
-    logger.addHandler(file_handler)
+    # --- Configure system logging ---
+    logger = setup_logging("system", log_dir)
+    setup_system_logging()
 
     config = load_config(args.config_dir, logger)
     conn_config = config.get("connection", {})

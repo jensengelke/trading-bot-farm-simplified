@@ -7,6 +7,7 @@ from src.bots.config_base import ConfigBase
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
 from src.utils import trace
+from src.logging_config import setup_logging
 from typing import Optional
 
 class BaseBotFilter(logging.Filter):
@@ -100,30 +101,8 @@ class BaseBot(metaclass=ABCMeta):
     def _init_logger(self, config_dir: str):
         """Initializes a dedicated logger for the bot."""
         log_dir = os.path.join("logs", os.path.basename(config_dir))
-        os.makedirs(log_dir, exist_ok=True)
-        log_file = os.path.join(log_dir, f"{self.config.bot_name}.log")
-
-        self.logger = logging.getLogger(self.config.bot_name)
-
-        # Clear existing handlers and filters to avoid duplicates
-        if self.logger.hasHandlers():
-            self.logger.handlers.clear()
-        self.logger.filters.clear()
-
-        self.logger.setLevel(logging.DEBUG)
-
-        # Prevent logs from propagating to the root logger
-        self.logger.propagate = False
-
-        # Add custom filter
+        self.logger = setup_logging(self.config.bot_name, log_dir)
         self.logger.addFilter(BaseBotFilter())
-
-        # Add file handler for the bot
-        file_handler = logging.FileHandler(log_file, mode='a')
-        file_handler.setLevel(logging.DEBUG)
-        formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
-        file_handler.setFormatter(formatter)
-        self.logger.addHandler(file_handler)
 
     @abstractmethod
     @trace
@@ -257,5 +236,5 @@ class BaseBot(metaclass=ABCMeta):
             if context["timer_id"]:
                 self.timer_manager.remove_timer(context["timer_id"])
 
-            self.logger.error(f"Calling callback {context['callback']} with data {context['data']}")
+            self.logger.debug(f"Calling callback {context['callback']} with data {context['data']}")
             context["callback"](context["data"])

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Callable
 from croniter import croniter
 import pytz
+from src.utils import trace
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,7 @@ class TimerManager:
         self.running = False
         self._timer_counter = 0
         
+    @trace
     def start(self):
         """Start the timer worker thread."""
         if self.running:
@@ -32,6 +34,7 @@ class TimerManager:
         self.worker_thread.start()
         logger.info("TimerManager started")
         
+    @trace
     def stop(self):
         """Stop the timer worker thread."""
         self.running = False
@@ -39,6 +42,7 @@ class TimerManager:
             self.worker_thread.join(timeout=5)
         logger.info("TimerManager stopped")
         
+    @trace
     def add_timer(
         self,
         bot_id: str,
@@ -111,6 +115,7 @@ class TimerManager:
             self.timers[timer_id] = timer_info
             return timer_id
     
+    @trace
     def remove_timer(self, timer_id: str):
         """Remove a timer by its ID."""
         logger.info(f"Removing timer_id: {timer_id} from timers: {self.timers}")
@@ -119,6 +124,7 @@ class TimerManager:
                 del self.timers[timer_id]
                 logger.info(f"Timer '{timer_id}' removed")
                 
+    @trace
     def remove_bot_timers(self, bot_id: str):
         """Remove all timers for a specific bot."""
         with self.lock:

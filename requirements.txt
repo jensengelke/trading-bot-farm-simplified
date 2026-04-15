@@ -5,3 +5,4 @@ requests
 pydantic
 croniter
 pytz
+tzdata

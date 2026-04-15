@@ -1,4 +1,8 @@
 import functools
+import logging
+from zoneinfo import ZoneInfo
+
+system_logger = logging.getLogger("system_debug")
 
 def trace(func):
     """
@@ -6,18 +10,19 @@ def trace(func):
     """
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
-        # In a class method, args[0] is typically 'self'. We can avoid printing the whole object.
         class_name = ""
-        if args and hasattr(args[0], '__class__'):
+        log_args = args
+        # Crude check for an instance method. If the first arg has the same name as the function,
+        # it's probably an instance method.
+        if args and hasattr(args[0], func.__name__):
             class_name = f"{args[0].__class__.__name__}."
-            
-        logger = None
-        if hasattr(args[0], 'logger'):
-            logger = args[0].logger
+            log_args = args[1:]
+        
+        logger = system_logger
 
         if logger:
-            logger.debug(f"ENTRY: {class_name}{func.__name__} | args: {args[1:]} kwargs: {kwargs}")
-        
+            logger.debug(f"ENTRY: {class_name}{func.__name__} | args: {log_args} kwargs: {kwargs}")
+
         try:
             result = func(*args, **kwargs)
             if logger:
@@ -28,3 +33,18 @@ def trace(func):
                 logger.debug(f"EXIT (EXCEPTION): {class_name}{func.__name__} | raised {type(e).__name__}: {e}")
             raise
     return wrapper
+
+@trace
+def get_ib_timezone(tz_string):
+    # Map common IB legacy strings to IANA standards if needed
+    mapping = {
+        "EST5EDT": "America/New_York",
+        "CST6CDT": "America/Chicago",
+        "MST7MDT": "America/Denver",
+        "PST8PDT": "America/Los_Angeles",
+        "US/Central": "America/Chicago",
+        "MET": "Europe/Berlin", # Middle European Time
+    }
+    tz_name = mapping.get(tz_string, tz_string)
+    return ZoneInfo(tz_name)
+

@@ -2,12 +2,15 @@ from src.bots.base_bot import BaseBot, ContractResolutionStatus
 from src.bots.fkk.config import FkkConfig
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
+from src.utils import get_ib_timezone
 from ibapi.contract import Contract, ContractDetails
 from datetime import datetime, timedelta, date
 import pytz
 import threading
+from src.utils import trace
 
 class FkkBot(BaseBot):
+    @trace
     def __init__(self, config: FkkConfig, ib_connection: IBConnection, timer_manager: TimerManager, config_dir: str):
         super().__init__(config, ib_connection, timer_manager, config_dir)
         self.underlying_contract: Contract = None
@@ -21,6 +24,7 @@ class FkkBot(BaseBot):
         self.option_market_data_req_ids: dict[int, Contract] = {}
         self.option_market_data_req_ids_lock = threading.Lock()
 
+    @trace
     def start(self):
         self.logger.info(f"Starting FkkBot with config: {self.config.bot_name}")
         tz_name = self.config.timezone if hasattr(self.config, "timezone") else "America/New_York"
@@ -42,11 +46,12 @@ class FkkBot(BaseBot):
         trigger_time = entry_datetime.strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
         self.timer_manager.add_timer(self.config.bot_name, "confirm_entry_conditions", self.on_timer, trigger_time=trigger_time)
 
+    @trace
     def stop(self):
         self.logger.info(f"Stopping FkkBot with config: {self.config.bot_name}")
 
+    @trace
     def on_timer(self, event_name: str, event_data: any = None):
-        self.logger.info(f"Received timer event: {event_name}")
         if event_name == "confirm_entry_conditions":
             self.on_confirm_entry_conditions()
         elif event_name == "stop_confirm_entry_conditions":
@@ -54,9 +59,8 @@ class FkkBot(BaseBot):
         elif event_name == "stop":
             self.test_stop()
 
+    @trace
     def on_confirm_entry_conditions(self):
-        self.logger.info("on_confirm_entry_conditions() called")
-        
         now = datetime.now(pytz.timezone(self.config.timezone))
         trigger_datetime = now + timedelta(seconds=self.config.entry_time_observation_period)
         trigger_time = trigger_datetime.strftime(f"%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
@@ -74,16 +78,41 @@ class FkkBot(BaseBot):
             status=self.underlying_contract_resolution_status,
             callback=self.on_confirm_entry_conditions_on_underlying_contract_resolved)
            
+    @trace
     def on_confirm_entry_conditions_on_underlying_contract_resolved(self,status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
-        self.logger.info("on_confirm_entry_conditions_on_underlying_contract_resolved() called")
-        self.logger.info(f"status: {status}")
-        self.logger.info(f"result_contracts: {result_contracts} ({len(result_contracts)})")
         if len(status.errors) == 0 and len(result_contracts) == 1 and status.complete:
             self.underlying_contract_details = result_contracts[0]
             self.underlying_contract = self.underlying_contract_details.contract
-            self.logger.info(f"Underlying contract resolved: {self.underlying_contract}")
-            self.logger.info(f"hours: {self.underlying_contract_details.tradingHours}")
+            self.logger.info(f"timezoneId: {self.underlying_contract_details.timeZoneId}")
+            self.logger.info(f"trading hours: {self.underlying_contract_details.tradingHours}")
             self.logger.info(f"liquid hours: {self.underlying_contract_details.liquidHours}")
+
+
+            # 1. Get the timezone object from IB's timeZoneId
+            ib_tz = get_ib_timezone(self.underlying_contract_details.timeZoneId)
+
+            # 2. Get the current time in THAT specific timezone
+            # This is the most reliable way to compare
+            now_in_exchange_tz = datetime.now(ib_tz)
+
+            # 3. Parse the IB string
+            # The string is in the format "YYYYMMDD:HHMM-YYYYMMDD:HHMM;YYYYMMDD:HHMM-YYYYMMDD:HHMM;..."
+            # Today is the part before first semicolon
+            todays_tradinghours = self.underlying_contract_details.tradingHours.split(";")[0]
+            # Split at - to get start and end time
+            ib_start_str, ib_end_str = todays_tradinghours.split("-")
+            # Convert to datetime object, considering timezone
+            start_dt = datetime.strptime(ib_start_str, "%Y%m%d:%H%M").replace(tzinfo=ib_tz)
+            end_dt = datetime.strptime(ib_end_str, "%Y%m%d:%H%M").replace(tzinfo=ib_tz)
+            self.logger.info(f"Today's trading hours: start_dt {start_dt} end_dt: {end_dt}. In local time at the exchange, it is now {now_in_exchange_tz}")
+
+            # 4. Compare
+            if start_dt <= now_in_exchange_tz and end_dt >= now_in_exchange_tz:
+                self.logger.info("Market should be open!")
+            else:
+                self.logger.info("Market should be closed!")
+
+
             # request historical data for SPX
             self.historical_bars.clear()
             self.historical_data_req_id = self.request_historical_data(contract=self.underlying_contract, 
@@ -98,25 +127,25 @@ class FkkBot(BaseBot):
         else:
             self.logger.error(f"Failed to resolve underlying contract: {status.errors}")
 
+    @trace
     def on_historical_data_end(self, bars):
-        self.logger.info(f"Historical data received: {bars}")
         self.historical_bars = bars
         self.historical_data_req_id = None
         self.evaluate_entry_conditions()
 
+    @trace
     def on_historical_data_update(self, bar):
         # This callback is invoked about once every 5 seconds when keepUpToDate is active after on historical_data_end() has retrieved the initial set of bars 
-        self.logger.info(f"Historical data update received: {bar}")
+        self.logger.info(f"Historical data update received, reevaluating entry conditions: {bar}")
         for i, b in enumerate(self.historical_bars):
             if b.date == bar.date:
                 self.historical_bars[i] = bar
                 break
         self.evaluate_entry_conditions()
 
+    @trace
     def evaluate_entry_conditions(self):
-        self.logger.info("Evaluating entry conditions...")
         if len(self.historical_bars) < self.config.sma_period:
-            self.logger.info("Not enough historical data to evaluate entry conditions.")
             return
 
         # Calculate SMA
@@ -138,13 +167,12 @@ class FkkBot(BaseBot):
         else:
             self.logger.info("Entry conditions are not met.")
     
+    @trace
     def on_entry_conditions_are_met(self):
-        self.logger.info("on_entry_conditions_are_met() called")
         self.resolve_option_chain(underlying=self.underlying_contract, callback=self.on_option_chain_resolved,timeout=4000)
 
+    @trace
     def on_option_chain_resolved(self, result: dict):
-        self.logger.info("on_option_chain_resolved() called")
-        
         # Filter for CBOE and SPXW
         cboe_data = None
         for exchange_data in result:
@@ -164,7 +192,7 @@ class FkkBot(BaseBot):
                 today += timedelta(days=7 - today.weekday())
 
         expiration_str = today.strftime("%Y%m%d")
-        self.logger.info(f"Looking for options with expiration: {expiration_str}")
+        self.logger.debug(f"Looking for options with expiration: {expiration_str}")
 
         if expiration_str in self.option_chain_data['expirations']:
             strikes = list(self.option_chain_data['strikes'])
@@ -172,13 +200,13 @@ class FkkBot(BaseBot):
             underlying_price = self.historical_bars[-1].close
             strikes.sort(key=lambda x: abs(x - underlying_price))
             put_strikes = strikes[:10]
-            self.logger.info(f"Found {len(put_strikes)} strikes for expiration {expiration_str}. Resolving puts.")
+            self.logger.debug(f"Found {len(put_strikes)} strikes for expiration {expiration_str}. Resolving puts.")
             self._resolve_option_contracts(put_strikes, "P", expiration_str)
         else:
             self.logger.error(f"Expiration {expiration_str} not found in option chain. Available expirations: {self.option_chain_data['expirations']}")
 
+    @trace
     def _resolve_option_contracts(self, strikes: set, right: str, expiration: str):
-        self.logger.info(f"_resolve_option_contracts() ENTRY with {len(strikes)} strikes, right: {right}, expiration: {expiration}")
         for strike in strikes:
             contract = Contract()
             contract.symbol = self.underlying_contract.symbol
@@ -193,12 +221,11 @@ class FkkBot(BaseBot):
             self.resolve_contracts(search_contract=contract, status=status, callback=self.on_option_contract_resolved)
             self.pending_contract_resolutions.append(status)
 
+    @trace
     def on_option_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
-        self.logger.info("on_option_contract_resolved() called")
         if status.complete and len(result_contracts) == 1:
             contract = result_contracts[0].contract
-            self.logger.info(f"Option contract resolved: {contract}")
-
+        
             if status in self.pending_contract_resolutions:
                 self.pending_contract_resolutions.remove(status)
                 # subscribe to market data for the resolved contract
@@ -213,14 +240,13 @@ class FkkBot(BaseBot):
         if len(self.pending_contract_resolutions) == 0:
             self.logger.info("All option contracts resolutions requests are done.")
 
+    @trace
     def tick_option_computation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
-        self.logger.info(f"FkkBot received tick option computation: {reqId}, {tickType}, {impliedVol}, delta: {delta}, {optPrice}, {pvDividend}, {gamma}, {vega}, {theta}, {undPrice}")
         if not delta is None and reqId in self.option_market_data_req_ids:
             with self.option_market_data_req_ids_lock:
                 if reqId in self.option_market_data_req_ids:
                     contract = self.option_market_data_req_ids[reqId]
                     self.option_prices[contract.conId] = self.get_cached_price(contract.conId).copy()
-                    self.logger.info(f"cached data: {self.get_cached_price(contract.conId)} stored in {self.option_prices[contract.conId]}")
                     self.unsubscribe_market_data(contract=contract)
                     del self.option_market_data_req_ids[reqId]
 
@@ -228,8 +254,9 @@ class FkkBot(BaseBot):
             self.logger.info("All Option prices and greeks received")
             self.select_strike()
         else:
-            self.logger.info(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
+            self.logger.debug(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
 
+    @trace
     def select_strike(self):
         self.logger.info("select_strike() ENTRY")
         
@@ -249,21 +276,22 @@ class FkkBot(BaseBot):
             if delta > highest_put_delta:
                 highest_put_delta = delta
         
-        self.logger.info(f"Highest put delta: {highest_put_delta}")
+        self.logger.debug(f"Highest put delta: {highest_put_delta}")
 
-        if highest_put_delta < (-1 * self.config.delta):
+        if highest_put_delta < (self.config.delta):
              self.on_option_chain_resolved(self.option_chain_data)
              return
         
-        self.logger.info("We can select a strike now.")
-        # Find the strike with delta closest to -0.16 for puts
+        self.logger.debug("We can select a strike now.")
+        # Find the strike with delta closest to configured delta for puts
         closest_put_distance=1
         closest_put_contract=None
         closest_put_delta = None
         for delta, contract in put_contracts.items():
-            if abs(delta - (self.config.delta)) < closest_put_distance:
+            self.logger.debug(f"Checking put contract with strike {contract.strike} and delta {delta}, comparing with closest_put_delta {(-1 * self.config.delta)}")
+            if abs(delta - self.config.delta) < closest_put_distance:                
                 closest_put_delta = delta
-                closest_put_distance = abs(delta - (-1 * self.config.delta))
+                closest_put_distance = abs(delta - self.config.delta)
                 closest_put_contract = contract
 
         if closest_put_contract is not None:
@@ -271,8 +299,9 @@ class FkkBot(BaseBot):
         else:
             self.logger.info("Could not find a suitable put contract.")
 
+    @trace
     def on_stop_confirm_entry_conditions(self):
-        self.logger.info("on_stop_confirm_entry_conditions() called")
+        self.logger.info("Stopping to observe market for entry conditions.")
         if self.historical_data_req_id is not None:
             self.cancel_historical_data(self.historical_data_req_id)
             req_id = self.historical_data_req_id
