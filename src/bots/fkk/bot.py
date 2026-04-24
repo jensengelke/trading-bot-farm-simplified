@@ -5,7 +5,8 @@ from src.timer_manager import TimerManager
 from src.utils import get_ib_timezone
 from ibapi.contract import ComboLeg, Contract, ContractDetails
 from ibapi.order import Order
-from ibapi.ticktype import TickTypeEnum
+from ibapi.tag_value import TagValue
+from ibapi.ticktype import TickTypeEnum, TickType
 from datetime import datetime, timedelta, date
 import pytz
 import threading
@@ -24,20 +25,12 @@ class FkkBot(BaseBot):
         self.underlying_contract_resolution_status: ContractResolutionStatus = None
         self.historical_bars = []
         self.historical_data_req_id: int = None
-        self.option_chain_data = {}
-        self.option_contracts = []
-        self.option_prices = {}
-        self.pending_contract_resolutions: list[ContractResolutionStatus] = []
-        self.option_market_data_req_ids: dict[int, Contract] = {}
-        self.option_market_data_req_ids_lock = threading.Lock()
-        self.long_option_market_data_req_ids: dict[int, Contract] = {}
         self.short_contract: Contract = None
         self.long_contract: Contract = None
-        self.long_strike: float = None
-        self.highest_put_strike: float = None
         self.spread_contract: Contract = None
         self.spread_price_subscription_reg_id = None
         self.spread_price: dict = None
+        self.option_market_data_req_ids: dict[int, Contract] = {}
 
     @trace
     def start(self):
@@ -185,146 +178,42 @@ class FkkBot(BaseBot):
     
     @trace
     def on_entry_conditions_are_met(self):
-        self.resolve_option_chain(
-            underlying=self.underlying_contract, 
-            callback=lambda res: self.on_option_chain_resolved(
-                next((x for x in res if x.get('exchange') == 'CBOE' and x.get('tradingClass') == 'SPXW'), None)
-            ),
-            timeout=4000
-        )
-
-    @trace
-    def on_option_chain_resolved(self, result: dict = None):
-        if result is not None:
-            self.option_chain_data = result
-        elif not self.option_chain_data:
-            self.logger.error("No option chain data found for CBOE with trading class SPXW.")
-            return
-
+        """Use OptionsFinder to find the short put contract by delta."""
         today = date.today()
         if self.config.test_mode:
-            if today.weekday() >= 5: # Monday is 0 and Sunday is 6
+            if today.weekday() >= 5:  # Monday is 0 and Sunday is 6
                 today += timedelta(days=7 - today.weekday())
 
         expiration_str = today.strftime("%Y%m%d")
-        self.logger.debug(f"Looking for options with expiration: {expiration_str}")
+        underlying_price = self.historical_bars[-1].close
         
-        if expiration_str in self.option_chain_data['expirations']:
-            #strikes = list(self.option_chain_data['strikes'])
-            # for now, just take 10 strikes around the money
-            underlying_price = self.historical_bars[-1].close
-            if self.highest_put_strike is None:
-                self.highest_put_strike = underlying_price
-            put_strikes = sorted([strike for strike in self.option_chain_data["strikes"] if strike < self.highest_put_strike], reverse=True)[:10]
-            self.logger.debug(f"Found {len(put_strikes)} strikes for expiration {expiration_str}. Resolving puts.")
-            self._resolve_option_contracts(put_strikes, "P", expiration_str)
-        else:
-            self.logger.error(f"Expiration {expiration_str} not found in option chain. Available expirations: {self.option_chain_data['expirations']}")
-
+        self.logger.info(f"Finding short put with delta {self.config.delta} for expiration {expiration_str}")
+        
+        # Use OptionsFinder to find the short contract
+        self.options_finder.find_option_by_delta(
+            underlying=self.underlying_contract,
+            underlying_price=underlying_price,
+            target_delta=self.config.delta,
+            right="P",
+            expiration=expiration_str,
+            callback=self.on_short_contract_found,
+            exchange="CBOE",
+            trading_class="SPXW",
+            timeout_ms=15000
+        )
+    
     @trace
-    def _resolve_option_contracts(self, strikes: set, right: str, expiration: str):
-        for strike in strikes:
-            contract = Contract()
-            contract.symbol = self.underlying_contract.symbol
-            contract.secType = "OPT"
-            contract.exchange = "SMART"
-            contract.currency = self.underlying_contract.currency
-            contract.lastTradeDateOrContractMonth = expiration
-            contract.strike = strike
-            contract.right = right
-            
-            status = ContractResolutionStatus()
-            self.resolve_contracts(search_contract=contract, status=status, callback=self.on_option_contract_resolved)
-            self.pending_contract_resolutions.append(status)
-
-    @trace
-    def on_option_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
-        if status.complete and len(result_contracts) == 1:
-            contract = result_contracts[0].contract
-        
-            if status in self.pending_contract_resolutions:
-                self.pending_contract_resolutions.remove(status)
-                # subscribe to market data for the resolved contract
-                req_id = self.subscribe_market_data(contract, "101,106") # removed 10,11,12,13,
-                self.option_market_data_req_ids[req_id] = contract
-                if self.short_contract and self.long_strike == contract.strike:
-                    self.long_contract = contract
-                    self.logger.info(f"Resolved long contract: {self.long_contract.strike}")
-                    self.select_long_contract()
-                else:
-                    self.option_contracts.append(contract)
-        else:
-             self.logger.error(f"Failed to resolve option contract: {status.errors}")
-             if status in self.pending_contract_resolutions:
-                self.pending_contract_resolutions.remove(status)
-
-        if len(self.pending_contract_resolutions) == 0:
-            self.logger.info("All option contracts resolutions requests are done.")
-
-    @trace
-    def tick_option_computation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
-        if not delta is None and reqId in self.option_market_data_req_ids:
-            with self.option_market_data_req_ids_lock:
-                if reqId in self.option_market_data_req_ids:
-                    contract = self.option_market_data_req_ids[reqId]
-                    self.option_prices[contract.conId] = self.get_cached_price(contract.conId).copy()
-                    self.unsubscribe_market_data(contract=contract)
-                    del self.option_market_data_req_ids[reqId]
-
-        if len(self.option_market_data_req_ids) == 0:
-            self.logger.info("All Option prices and greeks received")
-            if not self.short_contract:
-                self.select_strike()
-            else:
-                self.create_spread_contract()
-        else:
-            self.logger.debug(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
-
-    @trace
-    def select_strike(self):
-        self.logger.info("select_strike() ENTRY")
-        
-        put_contracts = {}
-
-        for c in self.option_contracts:
-            price_data = self.option_prices.get(c.conId)
-            if price_data is None:
-                self.logger.info(f"No price data found for contract {c.conId}")
-                continue
-            if c.right == "P":
-                if 'greeks' in price_data and price_data['greeks'] is not None and 'delta' in price_data['greeks'] and price_data['greeks']['delta'] is not None:
-                    put_contracts[price_data['greeks']['delta']] = c
-        
-        highest_put_delta = -1
-        for delta in put_contracts.keys():
-            if delta > highest_put_delta:
-                highest_put_delta = delta
-                self.highest_put_strike = put_contracts[delta].strike
-        
-        self.logger.debug(f"Highest put delta: {highest_put_delta}")
-
-        if highest_put_delta < (self.config.delta):
-            self.on_option_chain_resolved(None)
+    def on_short_contract_found(self, contract, greeks):
+        """Callback when short contract is found."""
+        if contract is None:
+            self.logger.error("Failed to find short put contract")
             return
         
-        self.logger.debug("We can select a strike now.")
-        # Find the strike with delta closest to configured delta for puts
-        closest_put_distance=1
-        closest_put_contract=None
-        closest_put_delta = None
-        for delta, contract in put_contracts.items():
-            self.logger.debug(f"Checking put contract with strike {contract.strike} and delta {delta}, comparing with closest_put_delta {(-1 * self.config.delta)}")
-            if abs(delta - self.config.delta) < closest_put_distance:                
-                closest_put_delta = delta
-                closest_put_distance = abs(delta - self.config.delta)
-                closest_put_contract = contract
-
-        if closest_put_contract is not None:
-            self.logger.info(f"Closest put contract: {closest_put_contract.strike} with delta {closest_put_delta}")
-            self.short_contract = closest_put_contract
-            self.select_long_contract()
-        else:
-            self.logger.info("Could not find a suitable put contract.")
+        self.short_contract = contract
+        self.logger.info(f"Found short put: strike={contract.strike}, delta={greeks.delta:.4f}")
+        
+        # Now find the long contract
+        self.select_long_contract()
 
     @trace
     def on_stop_confirm_entry_conditions(self):
@@ -337,19 +226,41 @@ class FkkBot(BaseBot):
 
     @trace
     def select_long_contract(self):
-       self.long_strike = self.short_contract.strike - self.config.width
-       # See if we have the contract already
-       order_created : bool = False
-       for c in self.option_contracts:
-           if c.strike == self.long_strike and c.right == "P":
-               self.long_contract = c
-               self.logger.info(f"Found long contract: {self.long_contract.strike}, creating spread contract")
-               self.create_spread_contract()
-               order_created = True
-       
-       if not order_created:
-           self.logger.info(f"Could not find long contract, resolving: {self.long_strike}")
-           self._resolve_option_contracts([self.long_strike], "P", self.short_contract.lastTradeDateOrContractMonth)
+        """Find the long put contract at the specified width."""
+        long_strike = self.short_contract.strike - self.config.width
+        expiration = self.short_contract.lastTradeDateOrContractMonth
+        
+        self.logger.info(f"Finding long put at strike {long_strike}")
+        
+        # Create contract specification for the long put
+        long_contract_spec = Contract()
+        long_contract_spec.symbol = self.underlying_contract.symbol
+        long_contract_spec.secType = "OPT"
+        long_contract_spec.exchange = "SMART"
+        long_contract_spec.currency = self.underlying_contract.currency
+        long_contract_spec.lastTradeDateOrContractMonth = expiration
+        long_contract_spec.strike = long_strike
+        long_contract_spec.right = "P"
+        
+        # Use OptionsFinder to resolve the contract
+        self.options_finder.resolve_contract(
+            long_contract_spec,
+            self.on_long_contract_found,
+            timeout_ms=5000
+        )
+    
+    @trace
+    def on_long_contract_found(self, contract, contract_details):
+        """Callback when long contract is resolved."""
+        if contract is None:
+            self.logger.error("Failed to resolve long put contract")
+            return
+        
+        self.long_contract = contract
+        self.logger.info(f"Found long put: strike={contract.strike}")
+        
+        # Create the spread contract
+        self.create_spread_contract()
         
     @trace
     def create_spread_contract(self):
@@ -380,9 +291,9 @@ class FkkBot(BaseBot):
     @trace
     def create_order(self):
         if self.spread_price == None:
-            self.spread_price = self.get_cached_price(req_id=self.spread_price_subscription_reg_id).copy()
+            self.spread_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id).copy()
 
-        lmt_price = (self.spread_price[TickType.BID] + self.spread_price[TickType.ASK]) / 2 # TODO
+        lmt_price = (self.spread_price[TickTypeEnum.BID] + self.spread_price[TickTypeEnum.ASK]) / 2 # TODO
 
         order = Order()
         order.action = "BUY"
@@ -396,20 +307,19 @@ class FkkBot(BaseBot):
         # Without this flag, many combos will be rejected
         # If a leg cannot be filled, the entire combo order will be rejected
         order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
-        self.place_order(contract, order)
+        self.place_order(self.spread_contract, order)
     
     @trace
     def tick_price(self, reqId, tickType, price, attrib):
         self.logger.debug(f"tick_price: reqId={reqId}, tickType={tickType}, price={price}, attrib={attrib}")
-        if reqId in self.option_market_data_req_ids:            
+        if reqId in self.option_market_data_req_ids:
             if self.spread_contract == self.option_market_data_req_ids[reqId]:
-                self.spread_price = self.get_cached_price(req_id = self.spread_price_subscription_reg_id).copy()
-                self.logger.debug(f"spread_price: {spread_price}")
-                if spread_price.get(TickTypeEnum.BID) is not None and spread_price.get(TickTypeEnum.ASK) is not None:
+                self.spread_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id).copy()
+                self.logger.debug(f"spread_price: {self.spread_price}")
+                if self.spread_price.get(TickTypeEnum.BID) is not None and self.spread_price.get(TickTypeEnum.ASK) is not None:
                     self.unsubscribe_market_data(self.spread_contract)
                     self.logger.debug(f"removing reqid from list: {reqId}")
                     del self.option_market_data_req_ids[reqId]
                     self.create_order()
-        pass
                 
             

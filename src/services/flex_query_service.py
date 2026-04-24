@@ -203,8 +203,8 @@ class FlexQueryService:
                              msg = root.find("ErrorMessage").text if root.find("ErrorMessage") is not None else "Unknown"
                              logger.error(f"GetStatement returned error: {msg}")
                              return None # Fatal error
-                except:
-                    logger.exception("Error parsing Flex response status.")
+                except Exception as e:
+                    logger.exception(f"Error parsing Flex response status: {e}")
                     return resp.content
                 
                 logger.info("Flex Statement request failed. Retrying...")
@@ -271,13 +271,15 @@ class FlexQueryService:
                 # Quantity
                 try:
                     qty = float(trade.get("quantity", 0))
-                except:
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse quantity from trade: {e}")
                     qty = 0.0
                     
                 # Price
                 try:
                     price = float(trade.get("tradePrice", 0))
-                except:
+                except (ValueError, TypeError) as e:
+                    logger.warning(f"Failed to parse tradePrice from trade: {e}")
                     price = 0.0
                     
                 # Order Ref
@@ -366,18 +368,21 @@ class FlexQueryService:
                     
                     try:
                         total_quantity = float(order_elem.get("quantity", 0))
-                    except:
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse order quantity: {e}")
                         total_quantity = 0.0
 
                     try:
                         lmt_price = float(order_elem.get("orderPrice", 0)) # Verify field name from XML spec if possible, usually orderPrice or limitPrice
                         # Fallback if 0 for Limit orders might be tradePrice?
-                    except:
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse order price: {e}")
                         lmt_price = 0.0
                         
                     try:
                         aux_price = float(order_elem.get("auxPrice", 0))
-                    except:
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Failed to parse aux price: {e}")
                         aux_price = 0.0
 
                     # Status might be inferred
@@ -390,8 +395,8 @@ class FlexQueryService:
                         try:
                              # Format: YYYY-MM-DD HHMMSS
                              order_time = datetime.strptime(order_time_str, "%Y-%m-%d %H%M%S")
-                        except:
-                             pass
+                        except ValueError as e:
+                             logger.warning(f"Failed to parse order time '{order_time_str}': {e}")
                     
                     orders.append({
                         "perm_id": perm_id,
@@ -466,8 +471,8 @@ class FlexQueryService:
                     if strike:
                         try:
                             contract_data["strike"] = float(strike)
-                        except:
-                            pass
+                        except (ValueError, TypeError) as e:
+                            logger.warning(f"Failed to parse strike price '{strike}': {e}")
                             
                     right = info.get("putCall")
                     if right:
@@ -535,8 +540,8 @@ class FlexQueryService:
                                     open_date = datetime.strptime(open_date_str, "%Y-%m-%d %H%M%S")
                                 else:
                                     open_date = datetime.strptime(open_date_str, "%Y-%m-%d")
-                            except:
-                                pass
+                            except ValueError as e:
+                                logger.warning(f"Failed to parse open date '{open_date_str}': {e}")
                         
                         lots.append({
                             "lot_id": op_elem.get("originatingTransactionID") or f"lot-{account_id}-{con_id}-{len(lots)}",

@@ -463,7 +463,10 @@ class IBConnection(EWrapper, EClient):
         req_id = self.get_next_req_id()
         self.request_listeners[req_id] = [listener]
         logger.info(f"Requesting option chain for {underlying_symbol} (ReqId: {req_id})")
-        self.reqSecDefOptParams(req_id, underlying_symbol, exchange, sec_type, conid)
+        # For reqSecDefOptParams, the 3rd parameter (futFopExchange) should be empty string for stock/index options
+        # The exchange parameter is only used for futures options
+        fut_fop_exchange = "" if sec_type in ["STK", "IND"] else exchange
+        self.reqSecDefOptParams(req_id, underlying_symbol, fut_fop_exchange, sec_type, conid)
         return req_id
 
     @trace

@@ -8,6 +8,7 @@ from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
 from src.utils import trace
 from src.logging_config import setup_logging
+from src.utils.options_finder import OptionsFinder
 from typing import Optional
 
 class BaseBotFilter(logging.Filter):
@@ -37,6 +38,9 @@ class BaseBot(metaclass=ABCMeta):
         self.ib_connection = ib_connection
         self.timer_manager = timer_manager
         self._init_logger(config_dir)
+
+        # Initialize OptionsFinder utility
+        self.options_finder = OptionsFinder(ib_connection, timer_manager)
 
         self._contract_resolution_requests = {}
         self._option_chain_resolution_requests = {}
