@@ -3,16 +3,23 @@ from src.bots.fkk.config import FkkConfig
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
 from src.utils import get_ib_timezone
-from ibapi.contract import Contract, ContractDetails
+from ibapi.contract import ComboLeg, Contract, ContractDetails
+from ibapi.order import Order
+from ibapi.ticktype import TickTypeEnum
 from datetime import datetime, timedelta, date
 import pytz
 import threading
+import os
 from src.utils import trace
 
 class FkkBot(BaseBot):
     @trace
     def __init__(self, config: FkkConfig, ib_connection: IBConnection, timer_manager: TimerManager, config_dir: str):
         super().__init__(config, ib_connection, timer_manager, config_dir)
+        self.clear_internal_state()
+
+    @trace
+    def clear_internal_state(self):
         self.underlying_contract: Contract = None
         self.underlying_contract_resolution_status: ContractResolutionStatus = None
         self.historical_bars = []
@@ -23,6 +30,14 @@ class FkkBot(BaseBot):
         self.pending_contract_resolutions: list[ContractResolutionStatus] = []
         self.option_market_data_req_ids: dict[int, Contract] = {}
         self.option_market_data_req_ids_lock = threading.Lock()
+        self.long_option_market_data_req_ids: dict[int, Contract] = {}
+        self.short_contract: Contract = None
+        self.long_contract: Contract = None
+        self.long_strike: float = None
+        self.highest_put_strike: float = None
+        self.spread_contract: Contract = None
+        self.spread_price_subscription_reg_id = None
+        self.spread_price: dict = None
 
     @trace
     def start(self):
@@ -61,6 +76,7 @@ class FkkBot(BaseBot):
 
     @trace
     def on_confirm_entry_conditions(self):
+        self.clear_internal_state()
         now = datetime.now(pytz.timezone(self.config.timezone))
         trigger_datetime = now + timedelta(seconds=self.config.entry_time_observation_period)
         trigger_time = trigger_datetime.strftime(f"%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
@@ -169,22 +185,21 @@ class FkkBot(BaseBot):
     
     @trace
     def on_entry_conditions_are_met(self):
-        self.resolve_option_chain(underlying=self.underlying_contract, callback=self.on_option_chain_resolved,timeout=4000)
+        self.resolve_option_chain(
+            underlying=self.underlying_contract, 
+            callback=lambda res: self.on_option_chain_resolved(
+                next((x for x in res if x.get('exchange') == 'CBOE' and x.get('tradingClass') == 'SPXW'), None)
+            ),
+            timeout=4000
+        )
 
     @trace
-    def on_option_chain_resolved(self, result: dict):
-        # Filter for CBOE and SPXW
-        cboe_data = None
-        for exchange_data in result:
-            if exchange_data['exchange'] == 'CBOE' and exchange_data['tradingClass'] == 'SPXW':
-                cboe_data = exchange_data
-                break
-        
-        if not cboe_data:
+    def on_option_chain_resolved(self, result: dict = None):
+        if result is not None:
+            self.option_chain_data = result
+        elif not self.option_chain_data:
             self.logger.error("No option chain data found for CBOE with trading class SPXW.")
             return
-
-        self.option_chain_data = cboe_data
 
         today = date.today()
         if self.config.test_mode:
@@ -193,13 +208,14 @@ class FkkBot(BaseBot):
 
         expiration_str = today.strftime("%Y%m%d")
         self.logger.debug(f"Looking for options with expiration: {expiration_str}")
-
+        
         if expiration_str in self.option_chain_data['expirations']:
-            strikes = list(self.option_chain_data['strikes'])
+            #strikes = list(self.option_chain_data['strikes'])
             # for now, just take 10 strikes around the money
             underlying_price = self.historical_bars[-1].close
-            strikes.sort(key=lambda x: abs(x - underlying_price))
-            put_strikes = strikes[:10]
+            if self.highest_put_strike is None:
+                self.highest_put_strike = underlying_price
+            put_strikes = sorted([strike for strike in self.option_chain_data["strikes"] if strike < self.highest_put_strike], reverse=True)[:10]
             self.logger.debug(f"Found {len(put_strikes)} strikes for expiration {expiration_str}. Resolving puts.")
             self._resolve_option_contracts(put_strikes, "P", expiration_str)
         else:
@@ -229,9 +245,14 @@ class FkkBot(BaseBot):
             if status in self.pending_contract_resolutions:
                 self.pending_contract_resolutions.remove(status)
                 # subscribe to market data for the resolved contract
-                req_id = self.subscribe_market_data(contract, "10,11,12,13,101,106")
-                self.option_contracts.append(contract)
+                req_id = self.subscribe_market_data(contract, "101,106") # removed 10,11,12,13,
                 self.option_market_data_req_ids[req_id] = contract
+                if self.short_contract and self.long_strike == contract.strike:
+                    self.long_contract = contract
+                    self.logger.info(f"Resolved long contract: {self.long_contract.strike}")
+                    self.select_long_contract()
+                else:
+                    self.option_contracts.append(contract)
         else:
              self.logger.error(f"Failed to resolve option contract: {status.errors}")
              if status in self.pending_contract_resolutions:
@@ -250,9 +271,12 @@ class FkkBot(BaseBot):
                     self.unsubscribe_market_data(contract=contract)
                     del self.option_market_data_req_ids[reqId]
 
-        if len(self.option_market_data_req_ids)==0:
+        if len(self.option_market_data_req_ids) == 0:
             self.logger.info("All Option prices and greeks received")
-            self.select_strike()
+            if not self.short_contract:
+                self.select_strike()
+            else:
+                self.create_spread_contract()
         else:
             self.logger.debug(f"Option prices and greeks not all received, {len(self.option_market_data_req_ids)} remaining")
 
@@ -275,12 +299,13 @@ class FkkBot(BaseBot):
         for delta in put_contracts.keys():
             if delta > highest_put_delta:
                 highest_put_delta = delta
+                self.highest_put_strike = put_contracts[delta].strike
         
         self.logger.debug(f"Highest put delta: {highest_put_delta}")
 
         if highest_put_delta < (self.config.delta):
-             self.on_option_chain_resolved(self.option_chain_data)
-             return
+            self.on_option_chain_resolved(None)
+            return
         
         self.logger.debug("We can select a strike now.")
         # Find the strike with delta closest to configured delta for puts
@@ -296,6 +321,8 @@ class FkkBot(BaseBot):
 
         if closest_put_contract is not None:
             self.logger.info(f"Closest put contract: {closest_put_contract.strike} with delta {closest_put_delta}")
+            self.short_contract = closest_put_contract
+            self.select_long_contract()
         else:
             self.logger.info("Could not find a suitable put contract.")
 
@@ -307,3 +334,82 @@ class FkkBot(BaseBot):
             req_id = self.historical_data_req_id
             self.historical_data_req_id = None
             self.logger.info(f"Cancelled historical data request with req_id: {req_id}")
+
+    @trace
+    def select_long_contract(self):
+       self.long_strike = self.short_contract.strike - self.config.width
+       # See if we have the contract already
+       order_created : bool = False
+       for c in self.option_contracts:
+           if c.strike == self.long_strike and c.right == "P":
+               self.long_contract = c
+               self.logger.info(f"Found long contract: {self.long_contract.strike}, creating spread contract")
+               self.create_spread_contract()
+               order_created = True
+       
+       if not order_created:
+           self.logger.info(f"Could not find long contract, resolving: {self.long_strike}")
+           self._resolve_option_contracts([self.long_strike], "P", self.short_contract.lastTradeDateOrContractMonth)
+        
+    @trace
+    def create_spread_contract(self):
+        if self.underlying_contract is None:
+            self.logger.error("underlying_contract is not set, cannot create spread contract")
+            return
+        contract = Contract()
+        contract.symbol = self.underlying_contract.symbol
+        contract.secType = "BAG"
+        contract.currency = self.underlying_contract.currency
+        contract.exchange = "SMART"  # Usually SMART for combo routing
+        leg1 = ComboLeg()
+        leg1.conId = self.short_contract.conId  # Use the unique Contract ID
+        leg1.ratio = 1
+        leg1.action = "SELL"
+        leg1.exchange = "SMART"
+        leg2 = ComboLeg()
+        leg2.conId = self.long_contract.conId  # Use the unique Contract ID
+        leg2.ratio = 1
+        leg2.action = "BUY"
+        leg2.exchange = "SMART"
+        contract.comboLegs = [leg1, leg2]
+        self.spread_contract = contract
+        self.spread_price_subscription_reg_id = self.subscribe_market_data(contract, "101,106") #  removed 10,11,12,13,
+        self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
+        self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
+
+    @trace
+    def create_order(self):
+        if self.spread_price == None:
+            self.spread_price = self.get_cached_price(req_id=self.spread_price_subscription_reg_id).copy()
+
+        lmt_price = (self.spread_price[TickType.BID] + self.spread_price[TickType.ASK]) / 2 # TODO
+
+        order = Order()
+        order.action = "BUY"
+        order.tif = "DAY"
+        order.totalQuantity = 1 # TODO
+        order.orderType = "LMT"
+        order.lmtPrice = lmt_price
+        
+        # Crucial for complex combos to ensure they fill
+        # NonGuaranteed = 1 allows the legs to be filled independently if needed - IBKR will still try to fill the combo as a whole
+        # Without this flag, many combos will be rejected
+        # If a leg cannot be filled, the entire combo order will be rejected
+        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+        self.place_order(contract, order)
+    
+    @trace
+    def tick_price(self, reqId, tickType, price, attrib):
+        self.logger.debug(f"tick_price: reqId={reqId}, tickType={tickType}, price={price}, attrib={attrib}")
+        if reqId in self.option_market_data_req_ids:            
+            if self.spread_contract == self.option_market_data_req_ids[reqId]:
+                self.spread_price = self.get_cached_price(req_id = self.spread_price_subscription_reg_id).copy()
+                self.logger.debug(f"spread_price: {spread_price}")
+                if spread_price.get(TickTypeEnum.BID) is not None and spread_price.get(TickTypeEnum.ASK) is not None:
+                    self.unsubscribe_market_data(self.spread_contract)
+                    self.logger.debug(f"removing reqid from list: {reqId}")
+                    del self.option_market_data_req_ids[reqId]
+                    self.create_order()
+        pass
+                
+            

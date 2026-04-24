@@ -353,7 +353,7 @@ class IBConnection(EWrapper, EClient):
     @trace
     def subscribe_market_data(self, listener: Any, contract: Contract, generic_tick_list: str = "") -> Optional[int]:
         con_id = contract.conId
-        if not con_id:
+        if not con_id and contract.secType != "BAG":
             logger.error(f"Cannot subscribe to market data: Invalid or missing conId for {contract.symbol}")
             return None
             
@@ -369,7 +369,7 @@ class IBConnection(EWrapper, EClient):
         self.active_subscriptions[con_id] = req_id
         self.request_listeners[req_id] = [listener]
         logger.info(f"Subscribing to market data for {contract.symbol} (conId: {con_id}, ReqId: {req_id})")
-        self.reqMktData(req_id, contract, "", False, False, [])
+        self.reqMktData(req_id, contract, generic_tick_list, False, False, [])
         return req_id
 
     @trace
@@ -386,11 +386,13 @@ class IBConnection(EWrapper, EClient):
                     del self.request_listeners[req_id]
 
     @trace
-    def get_cached_price(self, con_id: int) -> Optional[Dict[str, Any]]:
+    def get_cached_price(self, con_id: int = None, req_id: int=None) -> Optional[Dict[str, Any]]:
         """
         Retrieves cached market data for a given conId.
         """
-        req_id = self.active_subscriptions.get(con_id)
+        if req_id is None:
+            req_id = self.active_subscriptions.get(con_id)
+        
         if req_id is None:
             logger.warning(f"No active market data subscription found for conId {con_id}")
             return None

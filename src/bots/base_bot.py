@@ -131,8 +131,8 @@ class BaseBot(metaclass=ABCMeta):
         pass
 
     @trace
-    def get_cached_price(self, con_id: int):
-        return self.ib_connection.get_cached_price(con_id)
+    def get_cached_price(self, con_id: int = None, reg_id: int = None):
+        return self.ib_connection.get_cached_price(con_id = con_id, req_id = reg_id)
 
     @trace
     def place_order(self, contract: Contract, order: Order) -> Optional[int]:

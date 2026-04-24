@@ -2,7 +2,7 @@ from src.bots.base_bot import BaseBot, ContractResolutionStatus
 from src.bots.double_calendar.config import DoubleCalendarConfig
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
-from ibapi.contract import Contract
+from ibapi.contract import Contract, ContractDetails
 from ibapi.ticktype import TickTypeEnum
 from ibapi.order import Order
 from datetime import datetime, timedelta
