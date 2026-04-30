@@ -31,7 +31,7 @@ class FkkBot(BaseBot):
         self.spread_price_subscription_reg_id = None
         self.spread_price: dict = None
         self.option_market_data_req_ids: dict[int, Contract] = {}
-        self.stop_confirm_entry_conditions_timer_id: str | None = None
+        self.stop_timer_id = None
 
     @trace
     def start(self):
@@ -74,7 +74,7 @@ class FkkBot(BaseBot):
         now = datetime.now(pytz.timezone(self.config.timezone))
         trigger_datetime = now + timedelta(seconds=self.config.entry_time_observation_period)
         trigger_time = trigger_datetime.strftime(f"%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
-        self.stop_confirm_entry_conditions_timer_id = self.timer_manager.add_timer(self.config.bot_name, "stop_confirm_entry_conditions", self.on_timer, trigger_time=trigger_time)
+        self.stop_timer_id = self.timer_manager.add_timer(self.config.bot_name, "stop_confirm_entry_conditions", self.on_timer, trigger_time=trigger_time)
 
         # resolve underlying SPX contract
         self.underlying_contract = Contract()
@@ -174,12 +174,11 @@ class FkkBot(BaseBot):
         entry_conditions_met = close > sma and close > (1 + self.config.intraday_move_pct / 100) * open_price
         if entry_conditions_met or self.config.force_open_position:
             self.logger.info("Entry conditions are met.")
-            # stop listening to entry conditions. Move the timer to now to trigger the stop asynchronously.
-            if self.stop_confirm_entry_conditions_timer_id:
-                self.timer_manager.remove_timer(self.stop_confirm_entry_conditions_timer_id)
-            now = datetime.now(pytz.timezone(self.config.timezone))
-            trigger_time = now.strftime(f"%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
-            self.stop_confirm_entry_conditions_timer_id = self.timer_manager.add_timer(self.config.bot_name, "stop_confirm_entry_conditions", self.on_timer, trigger_time=trigger_time)
+            # Stop listening to entry conditions
+            if hasattr(self, 'stop_timer_id') and self.stop_timer_id:
+                self.timer_manager.remove_timer(self.stop_timer_id)
+                self.stop_timer_id = None
+            self.on_stop_confirm_entry_conditions()
             self.on_entry_conditions_are_met()
         else:
             self.logger.info("Entry conditions are not met.")
