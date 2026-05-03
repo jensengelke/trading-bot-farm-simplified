@@ -1,0 +1,15 @@
+connection:
+  host: "127.0.0.1"
+  port: 7496
+  client_id: 1
+  selected_account: "*******" # E.g., U1234567. If empty, uses default/all
+
+database:
+  url: "sqlite:///data/trading_farm.db"
+
+flex:
+  flex_token: "******************"
+  flex_query_id: "*****"
+
+ui:
+  port: 5000

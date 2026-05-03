@@ -174,10 +174,15 @@ class FkkBot(BaseBot):
         entry_conditions_met = close > sma and close > (1 + self.config.intraday_move_pct / 100) * open_price
         if entry_conditions_met or self.config.force_open_position:
             self.logger.info("Entry conditions are met.")
-            # Stop listening to entry conditions
+            # Remove the stop timer and proceed with entry
             if hasattr(self, 'stop_timer_id') and self.stop_timer_id:
-                self.timer_manager.remove_timer(self.stop_timer_id)
-                self.stop_timer_id = None
+                timer_id = self.stop_timer_id
+                if timer_id in self.timer_manager.timers:
+                    self.timer_manager.remove_timer(timer_id)
+                    self.stop_timer_id = None
+                else:
+                    self.logger.warning(f"Timer {timer_id} not found in timer manager (may have already fired)")
+                    self.stop_timer_id = None
             self.on_stop_confirm_entry_conditions()
             self.on_entry_conditions_are_met()
         else:
