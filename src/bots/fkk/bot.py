@@ -107,20 +107,27 @@ class FkkBot(BaseBot):
 
             # 3. Parse the IB string
             # The string is in the format "YYYYMMDD:HHMM-YYYYMMDD:HHMM;YYYYMMDD:HHMM-YYYYMMDD:HHMM;..."
+            # or "YYYYMMDD:CLOSED;..." when market is closed
             # Today is the part before first semicolon
             todays_tradinghours = self.underlying_contract_details.tradingHours.split(";")[0]
-            # Split at - to get start and end time
-            ib_start_str, ib_end_str = todays_tradinghours.split("-")
-            # Convert to datetime object, considering timezone
-            start_dt = datetime.strptime(ib_start_str, "%Y%m%d:%H%M").replace(tzinfo=ib_tz)
-            end_dt = datetime.strptime(ib_end_str, "%Y%m%d:%H%M").replace(tzinfo=ib_tz)
-            self.logger.info(f"Today's trading hours: start_dt {start_dt} end_dt: {end_dt}. In local time at the exchange, it is now {now_in_exchange_tz}")
-
-            # 4. Compare
-            if start_dt <= now_in_exchange_tz and end_dt >= now_in_exchange_tz:
-                self.logger.info("Market should be open!")
-            else:
+            
+            # Check if market is closed or data is invalid
+            if not todays_tradinghours or "CLOSED" in todays_tradinghours or "-" not in todays_tradinghours:
+                self.logger.warning(f"Market is closed today. Trading hours: '{todays_tradinghours}'")
                 self.logger.info("Market should be closed!")
+            else:
+                # Split at - to get start and end time
+                ib_start_str, ib_end_str = todays_tradinghours.split("-")
+                # Convert to datetime object, considering timezone
+                start_dt = datetime.strptime(ib_start_str, "%Y%m%d:%H%M").replace(tzinfo=ib_tz)
+                end_dt = datetime.strptime(ib_end_str, "%Y%m%d:%H%M").replace(tzinfo=ib_tz)
+                self.logger.info(f"Today's trading hours: start_dt {start_dt} end_dt: {end_dt}. In local time at the exchange, it is now {now_in_exchange_tz}")
+
+                # 4. Compare
+                if start_dt <= now_in_exchange_tz and end_dt >= now_in_exchange_tz:
+                    self.logger.info("Market should be open!")
+                else:
+                    self.logger.info("Market should be closed!")
 
 
             # request historical data for SPX

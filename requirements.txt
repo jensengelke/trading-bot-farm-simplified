@@ -1,5 +1,5 @@
 PyYAML>=6.0
-c:\twsapi\source\pythonclient
+c:\twsapi-latest\source\pythonclient
 sqlalchemy
 requests
 pydantic
