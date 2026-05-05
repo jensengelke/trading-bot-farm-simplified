@@ -164,6 +164,13 @@ def main():
     # Initialize Bot Manager
     bot_manager = BotManager(args.config_dir, ib_conn, logger)
     bot_manager.discover_and_load_bots()
+    
+    # Register sync completion callback to start bots after BOTH API and Flex sync complete
+    def on_full_sync_complete():
+        logger.info("Account sync complete. Starting all bots now...")
+        bot_manager.start_all_bots()
+    
+    sync_manager.set_sync_completion_callback(on_full_sync_complete)
     # TODO: add back when implementing listeners for account events
     # for bot in bot_manager.bots.values():
     #    ib_conn.register_listener(bot)
@@ -180,9 +187,7 @@ def main():
         logger.info(f"Performing initial sync for account {selected_account}...")
         try:
             success = sync_manager.sync_account(selected_account)
-            if success:
-                logger.info(f"Sync completed for {selected_account}")
-            else:
+            if not success:
                 logger.warning(f"Sync skipped or failed for {selected_account}")
         except Exception as e:
             logger.error(f"Error during sync: {e}")
@@ -191,7 +196,7 @@ def main():
     worker = WorkerThread(ib_conn, logger)
     if ib_conn.isConnected() and not worker.is_alive():
         worker.start()
-        bot_manager.start_all_bots()
+        # Note: Bots will be started automatically by sync completion callback
 
     # CLI Loop
     running = True
@@ -205,7 +210,7 @@ def main():
                 success = ib_conn.connect_and_start()
                 if success and not worker.is_alive():
                     worker.start()
-                    bot_manager.start_all_bots()
+                    # Note: Bots will be started by sync completion callback if sync runs
             else:
                 logger.info("Already connected.")
                 

@@ -24,7 +24,31 @@ class SyncManager:
         self.ib_conn = ib_conn
         self.config = config if config is not None else load_config()
         self._lock = threading.Lock()
+        self.flex_sync_complete = False
+        self.api_sync_complete = False
+        self.sync_completion_callback = None
 
+    @trace
+    def set_sync_completion_callback(self, callback):
+        """
+        Register a callback to be invoked when BOTH flex query and API sync complete.
+        """
+        self.sync_completion_callback = callback
+        logger.info("Sync completion callback registered")
+    
+    @trace
+    def _check_and_invoke_completion_callback(self):
+        """
+        Check if both flex and API sync are complete, and invoke callback if so.
+        """
+        if self.flex_sync_complete and self.api_sync_complete:
+            if self.sync_completion_callback:
+                logger.info("Both Flex Query and API sync complete. Invoking completion callback...")
+                try:
+                    threading.Thread(target=self.sync_completion_callback, daemon=True).start()
+                except Exception as e:
+                    logger.error(f"Error in sync completion callback: {e}")
+    
     @trace
     def sync_account(self, account_id: str) -> bool:
         """
@@ -37,6 +61,10 @@ class SyncManager:
         6. Recalculates Shadow Positions
         """
         logger.info(f"Starting sync for account {account_id}...")
+        
+        # Reset sync completion flags at the start
+        self.flex_sync_complete = False
+        self.api_sync_complete = False
         
         with self._lock:
             # 1. Find account config
@@ -117,7 +145,10 @@ class SyncManager:
                             self.repo.update_sync_state(account_id, last_date=new_last_date)
                         else:
                             logger.info(f"No new Flex Data to process for {account_id}. Not advancing sync date.")
-
+            
+            # Mark flex sync as complete
+            self.flex_sync_complete = True
+            logger.info("Flex Query sync completed.")
             
             # 5. API Sync for today's data
             self._sync_api_executions(account_id)
@@ -126,6 +157,15 @@ class SyncManager:
             logger.info(f"Recalculating shadow positions for {account_id}...")
             ignored_refs = []
             self.repo.recalc_shadow_positions(account_id, ignored_order_refs=ignored_refs)
+            
+            # Mark API sync as complete
+            self.api_sync_complete = True
+            logger.info("API sync completed.")
+            
+            logger.info(f"Sync completed for {account_id}")
+            
+            # Check if both syncs are complete and invoke callback
+            self._check_and_invoke_completion_callback()
             
             return True
 
