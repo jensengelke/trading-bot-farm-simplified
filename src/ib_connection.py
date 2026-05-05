@@ -123,21 +123,6 @@ class IBConnection(EWrapper, EClient):
             logger.error(f"IB Error [{errorCode}]: {errorString}")
 
     @trace
-    def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState):
-        super().openOrder(orderId, contract, order, orderState)
-        self.logger.info(f"openOrder. orderId: {orderId}, contract: {contract}, order: {order}")
-
-    @trace
-    def orderStatus(self, orderId: int, status: str, filled: Decimal, remaining: Decimal, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
-        super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
-        self.logger.info(f"orderId: {orderId}, status: {status}, filled: {filled}, remaining: {remaining}, avgFillPrice: {avgFillPrice}, permId: {permId}, parentId: {parentId}, lastFillPrice: {lastFillPrice}, clientId: {clientId}, whyHeld: {whyHeld}, mktCapPrice: {mktCapPrice}")
-
-    @trace
-    def execDetails(self, reqId: int, contract: Contract, execution: Execution):
-        super().execDetails(reqId, contract, execution)
-        self.logger.info(f"execDetails. reqId: {reqId}, contract: {contract}, execution: {execution}")
-
-    @trace
     def tickPrice(self, reqId: int, tickType: int, price: float, attrib):
         super().tickPrice(reqId, tickType, price, attrib)
         if reqId not in self.market_data:
@@ -183,12 +168,18 @@ class IBConnection(EWrapper, EClient):
         if account not in self.portfolio_data:
             self.portfolio_data[account] = {}
         
-        symbol = contract.localSymbol or contract.symbol
-        self.portfolio_data[account][symbol] = {
+        # Use conId as primary key, fallback to localSymbol or symbol
+        key = str(contract.conId) if contract.conId else (contract.localSymbol or contract.symbol)
+        
+        # Update only the fields available in position() callback
+        if key not in self.portfolio_data[account]:
+            self.portfolio_data[account][key] = {}
+        
+        self.portfolio_data[account][key].update({
+            "contract": contract,
             "position": position,
-            "avgCost": avgCost,
-            "contract": contract
-        }
+            "averageCost": avgCost
+        })
 
     @trace
     def updateAccountValue(self, key: str, val: str, currency: str, accountName: str):
@@ -205,7 +196,9 @@ class IBConnection(EWrapper, EClient):
         
         if curr_key not in self.account_data[accountName]:
             self.account_data[accountName][curr_key] = {}
-            
+        
+        self.account_data[accountName][curr_key][key] = val
+        
     @trace
     def updatePortfolio(self, contract: Contract, position: Decimal, marketPrice: float, marketValue: float, averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str):
         super().updatePortfolio(contract, position, marketPrice, marketValue, averageCost, unrealizedPNL, realizedPNL, accountName)
@@ -245,11 +238,9 @@ class IBConnection(EWrapper, EClient):
         if self.account_sync_callback:
             logger.info("Invoking account sync completion callback...")
             try:
-                self.account_sync_callback()
+                threading.Thread(target=self.account_sync_callback, daemon=True).start()
             except Exception as e:
                 logger.error(f"Error in account sync callback: {e}")
-
-        self.account_data[accountName][curr_key][key] = val
 
     @trace
     def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState):

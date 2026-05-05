@@ -18,6 +18,10 @@ class BotManager:
         
         # Register callback to start bots when account sync completes
         self.ib_connection.set_account_sync_callback(self._on_account_sync_complete)
+        
+        # Check if account sync already completed (race condition fix)
+        if self.ib_connection.is_account_sync_complete():
+            self._on_account_sync_complete()
     
     def _on_account_sync_complete(self):
         """Called by IBConnection when account synchronization completes."""
