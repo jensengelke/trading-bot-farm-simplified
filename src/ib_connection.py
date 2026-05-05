@@ -295,7 +295,7 @@ class IBConnection(EWrapper, EClient):
         if self.selected_account:
             logger.info(f"Requesting consistent account updates for {self.selected_account}")
             self.reqAccountUpdates(True, self.selected_account)
-
+            self.reqAutoOpenOrders(True)
 
     @trace
     def contractDetails(self, reqId: int, contractDetails):

@@ -166,15 +166,19 @@ def initialize_database(config: dict, logger: logging.Logger) -> Repository:
 
 def initialize_sync_manager(repository: Repository, ib_conn: IBConnection,
                            config: dict, bot_manager: BotManager,
-                           logger: logging.Logger) -> SyncManager:
+                           logger: logging.Logger, flex_query_start_date: str | None = None) -> SyncManager:
     """Initialize sync manager with completion callback.
+    
+    Args:
+        flex_query_start_date: Optional forced start date for flex query (YYYY-MM-DD format)
     
     Returns:
         SyncManager: Configured sync manager instance
     """
     logger.info("Initializing Sync Manager...")
     flex_service = FlexQueryService()
-    sync_manager = SyncManager(repository, flex_service, ib_conn, config=config)
+    sync_manager = SyncManager(repository, flex_service, ib_conn, config=config,
+                              flex_query_start_date=flex_query_start_date)
     
     # Register sync completion callback to start bots after sync
     def on_full_sync_complete():
@@ -352,6 +356,8 @@ def main():
     parser = argparse.ArgumentParser(description="Trading Bot Farm V2")
     parser.add_argument("--config-dir", default="config/default",
                        help="Path to config directory")
+    parser.add_argument("--flex-query-start-date", type=str, default=None,
+                       help="Force flex query sync from this date (format: YYYY-MM-DD)")
     args = parser.parse_args()
     
     # Setup environment
@@ -365,7 +371,8 @@ def main():
     bot_manager.discover_and_load_bots()
     
     sync_manager = initialize_sync_manager(repository, ib_conn, config,
-                                          bot_manager, logger)
+                                          bot_manager, logger,
+                                          args.flex_query_start_date)
     
     # Use context manager for guaranteed cleanup
     with ApplicationContext(ib_conn, bot_manager, logger):
