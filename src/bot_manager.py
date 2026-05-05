@@ -14,6 +14,16 @@ class BotManager:
         self.bots: Dict[str, BaseBot] = {}
         self.logger = logger
         self.timer_manager = TimerManager()
+        self.bots_started = False
+        
+        # Register callback to start bots when account sync completes
+        self.ib_connection.set_account_sync_callback(self._on_account_sync_complete)
+    
+    def _on_account_sync_complete(self):
+        """Called by IBConnection when account synchronization completes."""
+        if not self.bots_started:
+            self.logger.info("Account sync complete callback received. Starting bots now...")
+            self._start_bots_internal()
 
     def discover_and_load_bots(self):
         self.logger.info(f"Discovering bots in {self.config_dir}...")
@@ -56,11 +66,31 @@ class BotManager:
         except Exception as e:
             self.logger.error(f"An unexpected error occurred while loading bot '{bot_type}': {e}")
 
-    def start_all_bots(self):
+    def _start_bots_internal(self):
+        """Internal method to actually start the bots."""
+        if self.bots_started:
+            self.logger.debug("Bots already started, skipping.")
+            return
+            
         self.logger.info("Starting all bots...")
         self.timer_manager.start()
         for bot in self.bots.values():
             bot.start()
+        self.bots_started = True
+
+    def start_all_bots(self):
+        """
+        Start all bots. If account sync is not complete, bots will be started
+        automatically when the accountDownloadEnd callback is received.
+        """
+        # Check if account synchronization is complete before starting bots
+        if not self.ib_connection.is_account_sync_complete():
+            self.logger.warning("Account synchronization not yet complete. Waiting for accountDownloadEnd callback...")
+            self.logger.info("Bots will be started automatically when account data is fully synchronized.")
+            return
+        
+        self.logger.info("Account sync complete. Starting all bots now...")
+        self._start_bots_internal()
 
     def stop_all_bots(self):
         self.logger.info("Stopping all bots...")

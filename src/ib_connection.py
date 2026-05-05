@@ -48,6 +48,8 @@ class IBConnection(EWrapper, EClient):
         self.next_order_id: Optional[int] = None
         self._connected_event = threading.Event()
         self.api_thread: Optional[threading.Thread] = None
+        self.account_sync_complete: bool = False  # Set to True when accountDownloadEnd is called
+        self.account_sync_callback: Optional[callable] = None  # Callback to invoke when sync completes
         
         self.request_listeners: Dict[int, list] = {} # reqId -> listener for a specific request
         # Subscriptions tracking
@@ -204,6 +206,49 @@ class IBConnection(EWrapper, EClient):
         if curr_key not in self.account_data[accountName]:
             self.account_data[accountName][curr_key] = {}
             
+    @trace
+    def updatePortfolio(self, contract: Contract, position: Decimal, marketPrice: float, marketValue: float, averageCost: float, unrealizedPNL: float, realizedPNL: float, accountName: str):
+        super().updatePortfolio(contract, position, marketPrice, marketValue, averageCost, unrealizedPNL, realizedPNL, accountName)
+        # Apply Account Isolation
+        if self.selected_account and accountName != self.selected_account:
+            return
+
+        if accountName not in self.portfolio_data:
+            self.portfolio_data[accountName] = {}
+        
+        # Use conId as primary key, fallback to localSymbol or symbol
+        key = str(contract.conId) if contract.conId else (contract.localSymbol or contract.symbol)
+        
+        self.portfolio_data[accountName][key] = {
+            "contract": contract,
+            "position": position,
+            "marketPrice": marketPrice,
+            "marketValue": marketValue,
+            "averageCost": averageCost,
+            "unrealizedPNL": unrealizedPNL,
+            "realizedPNL": realizedPNL
+        }
+        
+        logger.debug(f"Portfolio update for {accountName}/{key}: pos={position}, avgCost={averageCost}, unrealizedPNL={unrealizedPNL}")
+
+    @trace
+    def accountDownloadEnd(self, accountName: str):
+        super().accountDownloadEnd(accountName)
+        # Apply Account Isolation
+        if self.selected_account and accountName != self.selected_account:
+            return
+            
+        logger.info(f"Account download complete for {accountName}. Full initial snapshot received.")
+        self.account_sync_complete = True
+        
+        # Invoke callback if registered
+        if self.account_sync_callback:
+            logger.info("Invoking account sync completion callback...")
+            try:
+                self.account_sync_callback()
+            except Exception as e:
+                logger.error(f"Error in account sync callback: {e}")
+
         self.account_data[accountName][curr_key][key] = val
 
     @trace
@@ -440,6 +485,59 @@ class IBConnection(EWrapper, EClient):
         if self.selected_account:
             return {self.selected_account: self.portfolio_data.get(self.selected_account, {}).copy()}
         return self.portfolio_data.copy()
+
+    @trace
+    def get_portfolio_position(self, con_id: int = None, symbol: str = None) -> Optional[Dict[str, Any]]:
+        """
+        Get a specific portfolio position by conId or symbol.
+        Returns position data including contract, position size, costs, and PnL.
+        """
+        if not self.selected_account:
+            logger.warning("No selected account available for portfolio lookup")
+            return None
+            
+        account_portfolio = self.portfolio_data.get(self.selected_account, {})
+        
+        # Try lookup by conId first
+        if con_id:
+            key = str(con_id)
+            if key in account_portfolio:
+                return account_portfolio[key].copy()
+        
+        # Fallback to symbol lookup
+        if symbol:
+            if symbol in account_portfolio:
+                return account_portfolio[symbol].copy()
+        
+        logger.debug(f"No portfolio position found for conId={con_id}, symbol={symbol}")
+        return None
+
+    @trace
+    def get_all_portfolio_positions(self) -> Dict[str, Any]:
+        """
+        Get all portfolio positions for the selected account.
+        Returns a dictionary keyed by conId (or symbol as fallback).
+        """
+        if self.selected_account:
+            return self.portfolio_data.get(self.selected_account, {}).copy()
+        return {}
+
+    @trace
+    def set_account_sync_callback(self, callback):
+        """
+        Register a callback to be invoked when account synchronization completes.
+        The callback will be called from accountDownloadEnd().
+        """
+        self.account_sync_callback = callback
+        logger.info("Account sync completion callback registered")
+
+    @trace
+    def is_account_sync_complete(self) -> bool:
+        """
+        Check if the initial account synchronization is complete.
+        Bots should only start after this returns True.
+        """
+        return self.account_sync_complete
 
     @trace
     def get_cached_account_summary(self) -> Dict[str, Dict[str, Any]]:
