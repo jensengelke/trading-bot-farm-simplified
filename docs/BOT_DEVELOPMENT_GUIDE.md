@@ -153,6 +153,183 @@ from typing import Optional
 class MyBotConfig(ConfigBase):
     # Custom fields with type hints and defaults
     entry_time: str = "09:30:00"
+
+## BaseBot Methods Reference
+
+The [`BaseBot`](../src/bots/base_bot.py) class provides the following methods for bot development:
+
+### Contract Resolution
+
+#### `resolve_contracts(search_contract, status, callback)`
+Resolves contract details asynchronously.
+
+**Parameters**:
+- `search_contract`: Contract object with search criteria
+- `status`: ContractResolutionStatus object to track progress
+- `callback`: Function called when resolution completes
+
+**Example**:
+```python
+from src.bots.base_bot import ContractResolutionStatus
+from ibapi.contract import Contract
+
+def check_entry(self):
+    contract = Contract()
+    contract.symbol = "SPY"
+    contract.secType = "STK"
+    contract.exchange = "SMART"
+    contract.currency = "USD"
+    
+    status = ContractResolutionStatus()
+    self.resolve_contracts(contract, status, self.on_contract_resolved)
+
+def on_contract_resolved(self, status, contracts):
+    if status.complete and len(contracts) > 0:
+        self.my_contract = contracts[0].contract
+        self.logger.info(f"Resolved: {self.my_contract.symbol}")
+```
+
+#### `resolve_option_chain(underlying, callback, timeout=5000)`
+Resolves available option chain for an underlying contract.
+
+**Parameters**:
+- `underlying`: Underlying contract
+- `callback`: Function called with option chain data
+- `timeout`: Timeout in milliseconds (default: 5000)
+
+### Market Data
+
+#### `subscribe_market_data(contract, generic_tick_list="") -> int`
+Subscribes to market data for a contract.
+
+**Returns**: Request ID for this subscription
+
+**Example**:
+```python
+req_id = self.subscribe_market_data(spy_contract)
+```
+
+#### `unsubscribe_market_data(contract)`
+Unsubscribes from market data for a contract.
+
+#### `get_cached_price(con_id=None, req_id=None) -> dict`
+Gets cached price data for a contract.
+
+**Returns**: Dictionary with tick types as keys (BID, ASK, LAST, etc.)
+
+### Historical Data
+
+#### `request_historical_data(contract, end_datetime, duration, bar_size, what_to_show, use_rth, keep_up_to_date, callback_historical_data_end, callback_historical_data_update=None) -> int`
+Requests historical bar data.
+
+**Parameters**:
+- `contract`: Contract to get data for
+- `end_datetime`: End date/time (format: "yyyyMMdd HH:mm:ss" or empty for current)
+- `duration`: Duration string (e.g., "1 D", "1 W", "1 M")
+- `bar_size`: Bar size (e.g., "1 min", "5 mins", "1 hour", "1 day")
+- `what_to_show`: Data type ("TRADES", "MIDPOINT", "BID", "ASK")
+- `use_rth`: 1 for regular trading hours only, 0 for all hours
+- `keep_up_to_date`: True to receive live updates
+- `callback_historical_data_end`: Called when initial data is complete
+- `callback_historical_data_update`: Called for live updates (if keep_up_to_date=True)
+
+**Returns**: Request ID
+
+**Example**:
+```python
+req_id = self.request_historical_data(
+    contract=spy_contract,
+    end_datetime="",  # Empty = current time
+    duration="5 D",
+    bar_size="1 day",
+    what_to_show="TRADES",
+    use_rth=1,
+    keep_up_to_date=False,
+    callback_historical_data_end=self.on_historical_data
+)
+
+def on_historical_data(self, bars):
+    for bar in bars:
+        self.logger.info(f"Bar: {bar.date} O:{bar.open} H:{bar.high} L:{bar.low} C:{bar.close}")
+```
+
+#### `cancel_historical_data(req_id)`
+Cancels a historical data subscription.
+
+### Order Management
+
+#### `place_order(contract, order) -> int`
+Places an order.
+
+**Parameters**:
+- `contract`: Contract to trade
+- `order`: Order object with order details
+
+**Returns**: Order ID
+
+**Note**: The bot name is automatically added to `order.orderRef` for tracking.
+
+**Example**:
+```python
+from ibapi.order import Order
+
+order = Order()
+order.action = "BUY"
+order.orderType = "LMT"
+order.totalQuantity = 100
+order.lmtPrice = 450.00
+order.orderRef = "entry_order"
+
+order_id = self.place_order(spy_contract, order)
+```
+
+### Callbacks (Override These)
+
+#### `tick_price(reqId, tickType, price, attrib)`
+Called when price tick is received.
+
+#### `tick_option_computation(reqId, tickType, tickAttrib, impliedVol, delta, optPrice, pvDividend, gamma, vega, theta, undPrice)`
+Called when option greeks are received.
+
+#### `order_status(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)`
+Called when order status changes.
+
+#### `exec_details(reqId, contract, execution)`
+Called when execution details are received.
+
+#### `open_order(orderId, contract, order, orderState)`
+Called for open orders.
+
+#### `on_timer(event_name, event_data=None)`
+Called when a scheduled timer fires.
+
+#### `historicalDataEnd(reqId, start, end, bars)`
+Called when historical data request completes.
+
+#### `historicalDataUpdate(reqId, bar)`
+Called for live historical data updates (if keep_up_to_date=True).
+
+### OptionsFinder Utility
+
+The `self.options_finder` utility provides advanced option selection:
+
+```python
+# Find option by delta
+self.options_finder.find_option_by_delta(
+    underlying=spx_contract,
+    expiration="20260515",
+    right="P",  # Put
+    target_delta=-0.35,
+    callback=self.on_option_found
+)
+
+def on_option_found(self, success, contract, greeks):
+    if success:
+        self.logger.info(f"Found put: strike={contract.strike}, delta={greeks.delta}")
+```
+
+See [`src/utils/options_finder.py`](../src/utils/options_finder.py) for full API.
+
     exit_time: str = "15:45:00"
     max_position_size: int = 1000
     risk_per_trade: float = 0.02

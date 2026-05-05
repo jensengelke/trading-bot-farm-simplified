@@ -328,6 +328,8 @@ bot_type: "double_calendar"
 log_level: "INFO"
 timezone: "UTC"
 test_mode: true
+
+**Note**: The Double Calendar bot inherits `timezone` from [`ConfigBase`](../src/bots/config_base.py). You can configure the timezone as shown above (defaults to UTC if not specified).
 ```
 
 ### Implementation Flow

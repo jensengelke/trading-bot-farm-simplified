@@ -151,6 +151,85 @@ graph LR
 - Contract metadata (SecurityInfo)
 - Position lots (FIFO tracking)
 
+## Database Schema
+
+The framework uses SQLAlchemy ORM with the following models (defined in [`src/db/models.py`](../src/db/models.py)):
+
+### Execution
+Stores trade execution details from both Flex Query and API.
+
+**Key Fields**:
+- `exec_id` (PK): Unique execution ID from IB
+- `account_id`: Account identifier
+- `order_ref`: Critical for linking to strategies/bots
+- `time`: Execution timestamp
+- `symbol`: Instrument symbol
+- `side`: "BOT" (buy) or "SLD" (sell)
+- `quantity`: Number of shares/contracts
+- `price`: Execution price
+- `con_id`: Contract ID
+- `perm_id`: Permanent order ID
+- `commission`: Commission charged (Flex only)
+
+### ShadowPosition
+Calculated positions based on execution history.
+
+**Key Fields**:
+- `id` (PK): Auto-increment ID
+- `account_id`: Account identifier
+- `order_ref`: Links to strategy/bot
+- `bot_instance_id`: Derived from order_ref
+- `symbol`: Instrument symbol
+- `con_id`: Contract ID
+- `quantity`: Net position (positive = long, negative = short)
+- `avg_cost`: Average cost basis
+
+### Order
+Stores order details and status.
+
+**Key Fields**:
+- `perm_id` (PK): Permanent order ID from IB
+- `client_order_id`: Transient order ID
+- `account_id`: Account identifier
+- `order_ref`: Links to strategy/bot
+- `con_id`: Contract ID
+- `action`: "BUY" or "SELL"
+- `order_type`: "LMT", "MKT", etc.
+- `total_quantity`: Order size
+- `status`: "Submitted", "Filled", "Cancelled", etc.
+- `filled_quantity`: Amount filled
+- `avg_fill_price`: Average fill price
+
+### IBContract
+Stores contract details.
+
+**Key Fields**:
+- `con_id` (PK): Contract ID
+- `symbol`: Instrument symbol
+- `sec_type`: Security type (STK, OPT, FUT, IND, etc.)
+- `last_trade_date_or_contract_month`: For derivatives
+- `strike`: Option strike price
+- `right`: "C" or "P" for options
+- `multiplier`: Contract multiplier
+- `exchange`: Primary exchange
+- `currency`: Trading currency
+- `last_update_time`: Last modification time
+- `last_seen`: Last time contract was referenced
+
+### SyncState
+Tracks synchronization status per account.
+
+**Key Fields**:
+- `account_id` (PK): Account identifier
+- `last_flex_sync_id`: Reference code of last Flex Query
+- `last_flex_sync_date`: Last Flex Query sync timestamp
+- `last_api_sync_date`: Last API sync timestamp
+- `last_execution_time`: Last execution time seen (for catch-up)
+
+### Position and PositionLot
+Additional models for position tracking and FIFO lot management. See [`src/db/models.py`](../src/db/models.py) for complete schema.
+
+
 **Configuration** (in `.config.yaml`):
 ```yaml
 flex:

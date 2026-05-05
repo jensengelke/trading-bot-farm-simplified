@@ -78,11 +78,16 @@ pip install -r requirements.txt
 mkdir -p config/default
 ```
 
-2. Create main configuration file `config/default/.config.yaml`:
+2. Copy the configuration template:
+```bash
+cp config/default/.config.yaml.template config/default/.config.yaml
+```
+
+3. Edit `config/default/.config.yaml` with your settings:
 ```yaml
 connection:
   host: "127.0.0.1"
-  port: 7497  # Paper trading
+  port: 7497  # Paper trading (7496 for live)
   client_id: 1
   selected_account: "DU123456"  # Your paper account
 
@@ -90,11 +95,14 @@ database:
   url: "sqlite:///data/trading_farm.db"
 
 flex:
-  flex_token: "your_flex_token_here"  # Optional
-  flex_query_id: "123456"  # Optional
+  flex_token: "your_flex_token_here"  # Optional - for historical data sync
+  flex_query_id: "123456"  # Optional - your Flex Query ID
+
+ui:
+  port: 5000  # Optional - for future web UI
 ```
 
-3. Create a bot configuration file `config/default/my_bot.yaml`:
+4. Create a bot configuration file `config/default/my_bot.yaml`:
 ```yaml
 bot_name: "my-bot-1"
 bot_type: "fkk"  # or "double_calendar"
@@ -141,9 +149,10 @@ trading-bot-farm-simplified/
 │
 ├── config/                      # Configuration files
 │   ├── default/                 # Default config directory
-│   │   ├── .config.yaml        # Main configuration
+│   │   ├── .config.yaml.template  # Configuration template
+│   │   ├── .config.yaml        # Main configuration (gitignored)
 │   │   └── *.yaml              # Bot configurations
-│   └── paper/                   # Paper trading configs
+│   └── demo/                    # Demo/paper trading configs
 │
 ├── src/                         # Source code
 │   ├── ib_connection.py        # IBAPI wrapper
@@ -223,6 +232,10 @@ req_id1 = self.subscribe_market_data(spy_contract)
 
 # Bot 2 subscribes to SPY (reuses same subscription)
 req_id2 = self.subscribe_market_data(spy_contract)
+
+# Note: req_id1 and req_id2 are different, but both bots receive
+# updates from the same underlying IB subscription (identified by conId).
+# This reduces API load and subscription costs.
 ```
 
 #### 3. Timer Management
@@ -231,15 +244,17 @@ Schedule operations with timezone awareness:
 
 ```python
 # One-time timer
-self.timer_manager.add_timer(
+timer_id = self.timer_manager.add_timer(
     bot_id=self.config.bot_name,
     event_name="check_entry",
     callback=self.on_timer,
+    event_data={"some": "data"},  # Optional data passed to callback
     trigger_time="2026-05-03 14:30:00 America/New_York"
 )
+# Returns timer_id for later reference/cancellation
 
 # Recurring timer (CRON)
-self.timer_manager.add_timer(
+timer_id = self.timer_manager.add_timer(
     bot_id=self.config.bot_name,
     event_name="daily_check",
     callback=self.on_timer,
@@ -262,11 +277,16 @@ A systematic bull put spread strategy on SPX:
 ```yaml
 bot_name: "fkk-1"
 bot_type: "fkk"
+log_level: "INFO"
+timezone: "America/New_York"
 entry_time: "14:15:00"
+entry_time_observation_period: 300  # Seconds to observe before deciding
 delta: -0.35
-width: 10
+width: 10  # Strike width between short and long puts
 sma_period: 5
 intraday_move_pct: 0.3
+test_mode: false  # Set to true for immediate testing
+force_open_position: false  # Set to true to skip entry condition checks
 ```
 
 ### Double Calendar Bot
