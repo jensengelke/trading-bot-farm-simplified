@@ -49,7 +49,6 @@ class IBConnection(EWrapper, EClient):
         self._connected_event = threading.Event()
         self.api_thread: Optional[threading.Thread] = None
         self.account_sync_complete: bool = False  # Set to True when accountDownloadEnd is called
-        self.account_sync_callback: Optional[callable] = None  # Callback to invoke when sync completes
         
         self.request_listeners: Dict[int, list] = {} # reqId -> listener for a specific request
         # Subscriptions tracking
@@ -234,13 +233,6 @@ class IBConnection(EWrapper, EClient):
         logger.info(f"Account download complete for {accountName}. Full initial snapshot received.")
         self.account_sync_complete = True
         
-        # Invoke callback if registered
-        if self.account_sync_callback:
-            logger.info("Invoking account sync completion callback...")
-            try:
-                threading.Thread(target=self.account_sync_callback, daemon=True).start()
-            except Exception as e:
-                logger.error(f"Error in account sync callback: {e}")
 
     @trace
     def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState):
@@ -512,15 +504,6 @@ class IBConnection(EWrapper, EClient):
         if self.selected_account:
             return self.portfolio_data.get(self.selected_account, {}).copy()
         return {}
-
-    @trace
-    def set_account_sync_callback(self, callback):
-        """
-        Register a callback to be invoked when account synchronization completes.
-        The callback will be called from accountDownloadEnd().
-        """
-        self.account_sync_callback = callback
-        logger.info("Account sync completion callback registered")
 
     @trace
     def is_account_sync_complete(self) -> bool:

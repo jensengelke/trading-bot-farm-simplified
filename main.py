@@ -12,7 +12,7 @@ import glob
 
 # Ensure the local src folder is in path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from src.logging_config import setup_logging, setup_system_logging
+from src.logging_config import setup_logging
 from src.ib_connection import IBConnection
 from src.db.database import Base, init_db
 import src.db.database as db
@@ -135,7 +135,6 @@ def main():
 
     # --- Configure system logging ---
     logger = setup_logging("system", log_dir)
-    setup_system_logging()
 
     config = load_config(args.config_dir, logger)
     conn_config = config.get("connection", {})
@@ -160,17 +159,19 @@ def main():
     logger.info("Initializing Sync Manager...")
     flex_service = FlexQueryService()
     sync_manager = SyncManager(repository, flex_service, ib_conn, config=config)
-
-    # Initialize Bot Manager
-    bot_manager = BotManager(args.config_dir, ib_conn, logger)
-    bot_manager.discover_and_load_bots()
     
-    # Register sync completion callback to start bots after BOTH API and Flex sync complete
+    # Register sync completion callback immediately after sync_manager creation
+    # to avoid race condition where sync completes before callback is set
     def on_full_sync_complete():
         logger.info("Account sync complete. Starting all bots now...")
         bot_manager.start_all_bots()
     
     sync_manager.set_sync_completion_callback(on_full_sync_complete)
+
+    # Initialize Bot Manager
+    bot_manager = BotManager(args.config_dir, ib_conn, logger)
+    bot_manager.discover_and_load_bots()
+    
     # TODO: add back when implementing listeners for account events
     # for bot in bot_manager.bots.values():
     #    ib_conn.register_listener(bot)
@@ -208,9 +209,15 @@ def main():
             if not ib_conn.isConnected():
                 logger.info("Attempting connection...")
                 success = ib_conn.connect_and_start()
-                if success and not worker.is_alive():
-                    worker.start()
-                    # Note: Bots will be started by sync completion callback if sync runs
+                if success:
+                    if not worker.is_alive():
+                        worker.start()
+                    # Trigger sync to ensure bots start via completion callback
+                    logger.info(f"Performing sync for account {selected_account}...")
+                    try:
+                        sync_manager.sync_account(selected_account)
+                    except Exception as e:
+                        logger.error(f"Error during sync: {e}")
             else:
                 logger.info("Already connected.")
                 

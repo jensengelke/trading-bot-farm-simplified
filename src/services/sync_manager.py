@@ -27,6 +27,7 @@ class SyncManager:
         self.flex_sync_complete = False
         self.api_sync_complete = False
         self.sync_completion_callback = None
+        self.callback_invoked = False
 
     @trace
     def set_sync_completion_callback(self, callback):
@@ -41,9 +42,10 @@ class SyncManager:
         """
         Check if both flex and API sync are complete, and invoke callback if so.
         """
-        if self.flex_sync_complete and self.api_sync_complete:
+        if self.flex_sync_complete and self.api_sync_complete and not self.callback_invoked:
             if self.sync_completion_callback:
                 logger.info("Both Flex Query and API sync complete. Invoking completion callback...")
+                self.callback_invoked = True
                 try:
                     threading.Thread(target=self.sync_completion_callback, daemon=True).start()
                 except Exception as e:
@@ -62,9 +64,9 @@ class SyncManager:
         """
         logger.info(f"Starting sync for account {account_id}...")
         
-        # Reset sync completion flags at the start
-        self.flex_sync_complete = False
-        self.api_sync_complete = False
+        # Use local flags for this sync operation
+        flex_sync_complete = False
+        api_sync_complete = False
         
         with self._lock:
             # 1. Find account config
@@ -74,6 +76,7 @@ class SyncManager:
             
             if not token or not query_id:
                 logger.warning(f"Missing flex_token or flex_query_id for account {account_id}. Skipping Flex Query.")
+                # Don't mark as complete if config is missing
             else:
                 # 2. Get last sync state from DB
                 sync_state = self.repo.get_sync_state(account_id)
@@ -128,11 +131,14 @@ class SyncManager:
                         
                     # After full backward init, set last_flex_sync_date to now
                     self.repo.update_sync_state(account_id, last_date=datetime.now())
+                    flex_sync_complete = True
                     
                 else:
                     # Ongoing daily/incremental sync
                     if last_flex_date >= yesterday:
                         logger.info(f"Flex data for account {account_id} is already up to date (last sync: {last_flex_date}). Skipping Flex Query.")
+                        # Data is up to date, mark as complete
+                        flex_sync_complete = True
                     else:
                         # We start checking from the day AFTER the last sync, but if there's overlap it's fine 
                         # because our repository handles upserts
@@ -143,29 +149,41 @@ class SyncManager:
                             # Update to the last date of the requested block (as a datetime at midnight to match column type)
                             new_last_date = datetime.combine(effective_end if effective_end else yesterday, datetime.min.time())
                             self.repo.update_sync_state(account_id, last_date=new_last_date)
+                            flex_sync_complete = True
                         else:
                             logger.info(f"No new Flex Data to process for {account_id}. Not advancing sync date.")
             
-            # Mark flex sync as complete
-            self.flex_sync_complete = True
-            logger.info("Flex Query sync completed.")
+            # Log flex sync status
+            if flex_sync_complete:
+                logger.info("Flex Query sync completed successfully.")
+            else:
+                logger.info("Flex Query sync was skipped or failed.")
             
             # 5. API Sync for today's data
-            self._sync_api_executions(account_id)
+            api_sync_complete = self._sync_api_executions(account_id)
 
             # 6. Recalc Shadow Positions
             logger.info(f"Recalculating shadow positions for {account_id}...")
             ignored_refs = []
             self.repo.recalc_shadow_positions(account_id, ignored_order_refs=ignored_refs)
             
-            # Mark API sync as complete
-            self.api_sync_complete = True
-            logger.info("API sync completed.")
+            # Log API sync status
+            if api_sync_complete:
+                logger.info("API sync completed successfully.")
+            else:
+                logger.info("API sync was skipped or failed.")
             
             logger.info(f"Sync completed for {account_id}")
             
-            # Check if both syncs are complete and invoke callback
-            self._check_and_invoke_completion_callback()
+            # Check if both syncs are complete and invoke callback for this operation
+            if flex_sync_complete and api_sync_complete and not self.callback_invoked:
+                if self.sync_completion_callback:
+                    logger.info("Both Flex Query and API sync complete. Invoking completion callback...")
+                    self.callback_invoked = True
+                    try:
+                        threading.Thread(target=self.sync_completion_callback, daemon=True).start()
+                    except Exception as e:
+                        logger.error(f"Error in sync completion callback: {e}")
             
             return True
 
@@ -243,11 +261,11 @@ class SyncManager:
         return has_data
 
     @trace
-    def _sync_api_executions(self, account_id: str):
-        """Fetches latest executions from IB API and saves to DB."""
+    def _sync_api_executions(self, account_id: str) -> bool:
+        """Fetches latest executions from IB API and saves to DB. Returns True if sync was successful."""
         if not self.ib_conn or not self.ib_conn.isConnected():
             logger.info("IBConnection not active. Skipping API sync for current data.")
-            return
+            return False
 
         logger.info(f"Starting API sync for {account_id}...")
         
@@ -337,11 +355,21 @@ class SyncManager:
 
             self.repo.update_sync_state(account_id, last_api_date=datetime.now())
             logger.info(f"API sync completed. Saved {count} executions.")
+            
+            # Cleanup
+            if req_id in self.ib_conn.execution_events:
+                del self.ib_conn.execution_events[req_id]
+            if req_id in self.ib_conn.executions_data:
+                del self.ib_conn.executions_data[req_id]
+            
+            return True
         else:
             logger.error("API sync timed out waiting for executions.")
-
-        # Cleanup
-        if req_id in self.ib_conn.execution_events:
-            del self.ib_conn.execution_events[req_id]
-        if req_id in self.ib_conn.executions_data:
-            del self.ib_conn.executions_data[req_id]
+            
+            # Cleanup
+            if req_id in self.ib_conn.execution_events:
+                del self.ib_conn.execution_events[req_id]
+            if req_id in self.ib_conn.executions_data:
+                del self.ib_conn.executions_data[req_id]
+            
+            return False
