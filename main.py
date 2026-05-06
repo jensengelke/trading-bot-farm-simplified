@@ -36,7 +36,8 @@ def object_to_dict(obj):
     """Recursively convert objects to dictionaries for YAML serialization."""
     from decimal import Decimal
     if isinstance(obj, dict):
-        return {k: object_to_dict(v) for k, v in obj.items()}
+        # For dictionaries, preserve all keys (including 0) and only filter values
+        return {k: object_to_dict(v) for k, v in obj.items() if object_to_dict(v) not in (None, "", [], {})}
     elif isinstance(obj, list):
         return [object_to_dict(v) for v in obj]
     elif isinstance(obj, Decimal):
@@ -117,6 +118,11 @@ def setup_environment(args) -> tuple:
     roll_log_files(log_dir)
     
     logger = setup_logging("system", log_dir)
+    
+    # Setup dedicated debug logger for order cache investigation
+    from src.logging_config import setup_debug_logger
+    setup_debug_logger("order_cache_debug", log_dir)
+    
     config = load_config(args.config_dir, logger)
     
     if not config:

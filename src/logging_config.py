@@ -32,3 +32,37 @@ def setup_logging(logger_name, log_dir, level=logging.DEBUG):
     logger.addHandler(trace_file_handler)
 
     return logger
+
+def setup_debug_logger(logger_name, log_dir, level=logging.ERROR):
+    """Setup a dedicated debug logger that writes to its own file.
+    
+    Default level is ERROR so it's silent during normal operations.
+    Change to logging.DEBUG when investigating issues.
+    """
+    logger = logging.getLogger(logger_name)
+    logger.setLevel(level)
+
+    # Clear existing handlers to avoid duplicate logs
+    if logger.hasHandlers():
+        logger.handlers.clear()
+
+    # Prevent logs from propagating to the root logger
+    logger.propagate = False
+
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Debug log file
+    debug_log_file = os.path.join(log_dir, f"{logger_name}.log")
+    file_handler = logging.FileHandler(debug_log_file, mode='a')
+    file_handler.setLevel(level)
+    formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(name)s: %(message)s')
+    file_handler.setFormatter(formatter)
+    logger.addHandler(file_handler)
+    
+    # Also log to console for immediate feedback
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(level)
+    console_handler.setFormatter(formatter)
+    logger.addHandler(console_handler)
+
+    return logger

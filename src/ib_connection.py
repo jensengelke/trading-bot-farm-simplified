@@ -16,6 +16,11 @@ from decimal import Decimal
 from src.utils import trace
 
 logger = logging.getLogger("system")
+# Dedicated debug logger for order cache investigation
+# Set to ERROR by default so it's silent during normal operations
+# Change to DEBUG when investigating order cache issues
+debug_logger = logging.getLogger("order_cache_debug")
+debug_logger.setLevel(logging.ERROR)
 
 class IBConnection(EWrapper, EClient):
     """
@@ -37,7 +42,7 @@ class IBConnection(EWrapper, EClient):
         self.market_data: Dict[int, Dict[str, Any]] = {}  # reqId -> {tickType -> value}
         self.portfolio_data: Dict[str, Dict[str, Any]] = {}  # account -> {symbol -> {position, avgCost}}
         self.account_data: Dict[str, Dict[str, Any]] = {}  # account -> {key -> value}
-        self.orders_data: Dict[int, Any] = {}  # orderId -> details
+        self.orders_data: Dict[int, Any] = {}  # permId -> details (using permanent order ID, not transient orderId)
         self.executions_data: Dict[int, list] = {}
         self.execution_events: Dict[int, threading.Event] = {}
         self.contract_details_data: Dict[int, list] = {}
@@ -237,26 +242,48 @@ class IBConnection(EWrapper, EClient):
     @trace
     def openOrder(self, orderId: int, contract: Contract, order: Order, orderState: OrderState):
         super().openOrder(orderId, contract, order, orderState)
+        
+        debug_logger.info(f"[ORDER_CACHE] openOrder() called: orderId={orderId}, symbol={contract.symbol}, "
+                         f"conId={contract.conId}, account={order.account}, status={orderState.status}, "
+                         f"permId={order.permId}, {order.orderId}")
+        
         # Account context protection
         if self.selected_account and order.account and order.account != self.selected_account:
+            debug_logger.info(f"[ORDER_CACHE] FILTERED OUT: orderId={orderId} - account mismatch "
+                            f"(order.account={order.account} != selected_account={self.selected_account})")
             return
 
-        self.orders_data[orderId] = {
+        # Use permId as cache key (permanent order ID that persists across sessions)
+        # orderId is transient and can be 0 for orders not placed in current session
+        perm_id = order.permId
+        debug_logger.info(f"[ORDER_CACHE] ADDING to cache: orderId={orderId}, permId={perm_id} (using permId as key)")
+        self.orders_data[perm_id] = {
             "contract": contract,
             "order": order,
+            "orderId": orderId,  # Store transient orderId for reference
             "state": orderState.status
         }
+        debug_logger.info(f"[ORDER_CACHE] Cache size after add: {len(self.orders_data)}")
+        debug_logger.info(f"[ORDER_CACHE] Current cache keys (permIds): {list(self.orders_data.keys())}")
 
     
     @trace
     def orderStatus(self, orderId: int, status: str, filled: Decimal, remaining: Decimal, avgFillPrice: float, permId: int, parentId: int, lastFillPrice: float, clientId: int, whyHeld: str, mktCapPrice: float):
         super().orderStatus(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
-        # Check isolated account directly or skip check if we assume order is ours
-        if orderId in self.orders_data:
-            self.orders_data[orderId]["state"] = status
-            self.orders_data[orderId]["filled"] = filled
-            self.orders_data[orderId]["remaining"] = remaining
-            self.orders_data[orderId]["avgFillPrice"] = avgFillPrice
+        
+        debug_logger.info(f"[ORDER_CACHE] orderStatus() called: orderId={orderId}, status={status}, "
+                         f"filled={filled}, remaining={remaining}, permId={permId}")
+        
+        # Use permId to look up order (cache is keyed by permId now)
+        if permId in self.orders_data:
+            debug_logger.info(f"[ORDER_CACHE] UPDATING existing order: permId={permId}")
+            self.orders_data[permId]["state"] = status
+            self.orders_data[permId]["filled"] = filled
+            self.orders_data[permId]["remaining"] = remaining
+            self.orders_data[permId]["avgFillPrice"] = avgFillPrice
+        else:
+            debug_logger.warning(f"[ORDER_CACHE] orderStatus for permId={permId} but NOT in cache! "
+                               f"Cache keys (permIds): {list(self.orders_data.keys())}")
 
 
     @trace
@@ -286,15 +313,21 @@ class IBConnection(EWrapper, EClient):
         logger.info(f"Managed Accounts received: {accountsList}")
         accounts = [a.strip() for a in accountsList.split(",") if a.strip()]
         
+        debug_logger.info(f"[ORDER_CACHE] managedAccounts() called with: {accountsList}")
+        debug_logger.info(f"[ORDER_CACHE] Current selected_account: {self.selected_account}")
+        
         # If no selected_account was configured, pick the first one from the list automatically
         if not self.selected_account and accounts:
             self.selected_account = accounts[0]
             logger.warning(f"No selected_account configured. Auto-selecting first account: {self.selected_account}")
+            debug_logger.info(f"[ORDER_CACHE] Auto-selected account: {self.selected_account}")
             
         # As soon as we know our account, start polling its full update stream
         if self.selected_account:
             logger.info(f"Requesting consistent account updates for {self.selected_account}")
+            debug_logger.info(f"[ORDER_CACHE] Calling reqAccountUpdates for {self.selected_account}")
             self.reqAccountUpdates(True, self.selected_account)
+            debug_logger.info(f"[ORDER_CACHE] Calling reqAutoOpenOrders(True)")
             self.reqAutoOpenOrders(True)
 
     @trace
@@ -452,14 +485,34 @@ class IBConnection(EWrapper, EClient):
 
     @trace
     def get_orders(self, include_closed: bool = False) -> Dict[int, Any]:
-        """Returns a copy of the active (and optionally closed) orders for the selected account."""
+        """Returns a copy of the active (and optionally closed) orders for the selected account.
+        
+        Returns:
+            Dict keyed by permId (permanent order ID)
+        """
+        debug_logger.info(f"[ORDER_CACHE] get_orders() called. include_closed={include_closed}")
+        debug_logger.info(f"[ORDER_CACHE] Total orders in cache: {len(self.orders_data)}")
+        debug_logger.info(f"[ORDER_CACHE] Cache keys (permIds): {list(self.orders_data.keys())}")
+        debug_logger.info(f"[ORDER_CACHE] Selected account: {self.selected_account}")
+        
         filtered_orders = {}
-        for k, v in self.orders_data.items():
+        for perm_id, v in self.orders_data.items():
+            order_account = v["order"].account if v["order"].account else "None"
+            order_state = v.get("state", "Unknown")
+            
+            debug_logger.info(f"[ORDER_CACHE] Processing permId={perm_id}: account={order_account}, state={order_state}")
+            
             if self.selected_account and v["order"].account and v["order"].account != self.selected_account:
+                debug_logger.info(f"[ORDER_CACHE]   -> FILTERED: account mismatch")
                 continue
             if not include_closed and v.get("state") in ["Filled", "Cancelled", "Inactive"]:
+                debug_logger.info(f"[ORDER_CACHE]   -> FILTERED: closed order (state={order_state})")
                 continue
-            filtered_orders[k] = v
+            
+            debug_logger.info(f"[ORDER_CACHE]   -> INCLUDED in result")
+            filtered_orders[perm_id] = v
+        
+        debug_logger.info(f"[ORDER_CACHE] Returning {len(filtered_orders)} orders")
         return filtered_orders
 
     @trace
