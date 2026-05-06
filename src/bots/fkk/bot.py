@@ -32,6 +32,7 @@ class FkkBot(BaseBot):
         self.spread_price: dict = None
         self.option_market_data_req_ids: dict[int, Contract] = {}
         self.stop_timer_id = None
+        self.entry_in_progress = False
 
     @trace
     def start(self):
@@ -148,7 +149,7 @@ class FkkBot(BaseBot):
     @trace
     def on_historical_data_end(self, bars):
         self.historical_bars = bars
-        self.historical_data_req_id = None
+        # Don't set to None here - we need to keep the req_id to cancel the subscription later
         self.evaluate_entry_conditions()
 
     @trace
@@ -163,6 +164,11 @@ class FkkBot(BaseBot):
 
     @trace
     def evaluate_entry_conditions(self):
+        # Prevent re-entry if we're already processing an entry
+        if self.entry_in_progress:
+            self.logger.debug("Entry already in progress, skipping evaluation")
+            return
+            
         if len(self.historical_bars) < self.config.sma_period:
             return
 
@@ -181,6 +187,8 @@ class FkkBot(BaseBot):
         entry_conditions_met = close > sma and close > (1 + self.config.intraday_move_pct / 100) * open_price
         if entry_conditions_met or self.config.force_open_position:
             self.logger.info("Entry conditions are met.")
+            # Set flag to prevent re-entry
+            self.entry_in_progress = True
             # Remove the stop timer and proceed with entry
             if hasattr(self, 'stop_timer_id') and self.stop_timer_id:
                 timer_id = self.stop_timer_id
