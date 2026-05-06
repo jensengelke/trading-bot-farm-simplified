@@ -36,8 +36,8 @@ def object_to_dict(obj):
     """Recursively convert objects to dictionaries for YAML serialization."""
     from decimal import Decimal
     if isinstance(obj, dict):
-        # For dictionaries, preserve all keys (including 0) and only filter values
-        return {k: object_to_dict(v) for k, v in obj.items() if object_to_dict(v) not in (None, "", [], {})}
+        # For dictionaries, preserve all keys (except for 0) and only filter values
+        return {k: converted for k, v in obj.items() if (converted := object_to_dict(v)) not in (None, "", [], {})}
     elif isinstance(obj, list):
         return [object_to_dict(v) for v in obj]
     elif isinstance(obj, Decimal):

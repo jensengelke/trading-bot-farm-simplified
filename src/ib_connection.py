@@ -245,7 +245,7 @@ class IBConnection(EWrapper, EClient):
         
         debug_logger.info(f"[ORDER_CACHE] openOrder() called: orderId={orderId}, symbol={contract.symbol}, "
                          f"conId={contract.conId}, account={order.account}, status={orderState.status}, "
-                         f"permId={order.permId}, {order.orderId}")
+                         f"permId={order.permId}")
         
         # Account context protection
         if self.selected_account and order.account and order.account != self.selected_account:
