@@ -191,31 +191,32 @@ class SyncManager:
         config_result = self._validate_flex_config(account_id)
         
         if not config_result:
-            logger.error(f"Invalid flex configuration for account {account_id}. Sync failed.")
-            return False
-        
-        token, query_id = config_result
-        
-        # 2. Get last sync state from DB
-        sync_state = self.repo.get_sync_state(account_id)
-        last_flex_date = (sync_state.last_flex_sync_date.date()
-                         if sync_state and sync_state.last_flex_sync_date
-                         else None)
-        
-        # 3. Perform Flex Query sync (initialization or incremental)
-        if not last_flex_date:
-            self.flex_sync_complete = self._initialize_flex_sync(account_id, token, query_id, yesterday, now)
+            logger.warning(f"Flex query not configured for account {account_id}. Skipping Flex Query sync (suitable for demo accounts).")
+            # Mark flex sync as complete since it's not required
+            self.flex_sync_complete = True
         else:
-            self.flex_sync_complete = self._perform_incremental_flex_sync(
-                account_id, token, query_id, last_flex_date, yesterday
-            )
-        
-        # Log flex sync status
-        if self.flex_sync_complete:
-            logger.info("Flex Query sync completed successfully.")
-        else:
-            logger.error("Flex Query sync failed. Stopping sync process.")
-            return False
+            token, query_id = config_result
+            
+            # 2. Get last sync state from DB
+            sync_state = self.repo.get_sync_state(account_id)
+            last_flex_date = (sync_state.last_flex_sync_date.date()
+                             if sync_state and sync_state.last_flex_sync_date
+                             else None)
+            
+            # 3. Perform Flex Query sync (initialization or incremental)
+            if not last_flex_date:
+                self.flex_sync_complete = self._initialize_flex_sync(account_id, token, query_id, yesterday, now)
+            else:
+                self.flex_sync_complete = self._perform_incremental_flex_sync(
+                    account_id, token, query_id, last_flex_date, yesterday
+                )
+            
+            # Log flex sync status
+            if self.flex_sync_complete:
+                logger.info("Flex Query sync completed successfully.")
+            else:
+                logger.error("Flex Query sync failed. Stopping sync process.")
+                return False
         
         # 4. API Sync for today's data
         self.api_sync_complete = self._sync_api_executions(account_id)
