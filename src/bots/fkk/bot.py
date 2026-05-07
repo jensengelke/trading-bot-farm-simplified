@@ -28,6 +28,8 @@ class FkkBot(BaseBot):
         self.short_contract: Contract = None
         self.long_contract: Contract = None
         self.spread_contract: Contract = None
+        self.spread_contract_details = None
+        self.spread_min_tick: float = 0.05  # Default value
         self.spread_price_subscription_reg_id = None
         self.spread_price: dict = None
         self.option_market_data_req_ids: dict[int, Contract] = {}
@@ -311,23 +313,53 @@ class FkkBot(BaseBot):
         leg2.exchange = "SMART"
         contract.comboLegs = [leg1, leg2]
         self.spread_contract = contract
-        self.spread_price_subscription_reg_id = self.subscribe_market_data(contract, "101,106") #  removed 10,11,12,13,
-        self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
-        self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
+        
+        # Request contract details to get minTick
+        spread_contract_resolution_status = ContractResolutionStatus()
+        self.resolve_contracts(
+            search_contract=self.spread_contract,
+            status=spread_contract_resolution_status,
+            callback=self.on_spread_contract_details_resolved
+        )
+    
+    @trace
+    def on_spread_contract_details_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
+        """Callback when spread contract details are resolved."""
+        if len(status.errors) == 0 and len(result_contracts) > 0 and status.complete:
+            self.spread_contract_details = result_contracts[0]
+            self.spread_min_tick = self.spread_contract_details.minTick
+            self.logger.info(f"Spread contract minTick: {self.spread_min_tick}")
+            
+            # Now subscribe to market data
+            self.spread_price_subscription_reg_id = self.subscribe_market_data(self.spread_contract, "101,106")
+            self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
+            self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
+        else:
+            self.logger.warning(f"Failed to resolve spread contract details: {status.errors}. Using default minTick: {self.spread_min_tick}")
+            # Continue anyway with default minTick
+            self.spread_price_subscription_reg_id = self.subscribe_market_data(self.spread_contract, "101,106")
+            self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
+            self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
 
     @trace
     def create_order(self):
         if self.spread_price == None:
             self.spread_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id).copy()
 
-        lmt_price = (self.spread_price[TickTypeEnum.BID] + self.spread_price[TickTypeEnum.ASK]) / 2 # TODO
+        # Calculate mid price
+        mid_price = (self.spread_price[TickTypeEnum.BID] + self.spread_price[TickTypeEnum.ASK]) / 2
+        
+        # Adjust mid price to respect minTick
+        adjusted_lmt_price = round(mid_price / self.spread_min_tick) * self.spread_min_tick
+        
+        self.logger.info(f"Order pricing - Bid: {self.spread_price[TickTypeEnum.BID]}, Ask: {self.spread_price[TickTypeEnum.ASK]}, Mid: {mid_price:.4f}, minTick: {self.spread_min_tick}, Adjusted Limit: {adjusted_lmt_price:.4f}")
 
         order = Order()
         order.action = "BUY"
         order.tif = "DAY"
         order.totalQuantity = 1 # TODO
         order.orderType = "LMT"
-        order.lmtPrice = lmt_price
+        order.lmtPrice = adjusted_lmt_price
         
         # Crucial for complex combos to ensure they fill
         # NonGuaranteed = 1 allows the legs to be filled independently if needed - IBKR will still try to fill the combo as a whole
