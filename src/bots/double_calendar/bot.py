@@ -172,11 +172,20 @@ class DoubleCalendarBot(BaseBot):
         # - exchange is SMART
         # - tradingclass is "SPXW"
 
-        filtered_option_chain_data = [option for option in option_chain_data 
-                                    if (self.expiration1_str in option["expirations"] or self.expiration2_str in option["expirations"]) and 
-                                    option["exchange"] == "CBOE" and 
+        filtered_option_chain_data = [option for option in option_chain_data
+                                    if (self.expiration1_str in option["expirations"] or self.expiration2_str in option["expirations"]) and
+                                    option["exchange"] == "CBOE" and
                                     option["tradingClass"] == "SPXW"]
         self.logger.info(f"Filtered option chain data: {filtered_option_chain_data}")
+
+        # Check if we have valid option chain data
+        if not filtered_option_chain_data:
+            self.logger.warning("No option chain data available for the specified expirations. This may occur outside trading hours. Aborting.")
+            return
+        
+        if not filtered_option_chain_data[0].get("strikes"):
+            self.logger.warning("Option chain data contains no strikes. This may occur outside trading hours. Aborting.")
+            return
 
         self.option_contract_resolutions = {}
 
@@ -193,6 +202,11 @@ class DoubleCalendarBot(BaseBot):
                 self.highest_put_strike = self.underlying_price
             put_strikes = sorted([strike for strike in filtered_option_chain_data[0]["strikes"] if strike < self.highest_put_strike], reverse=True)[:10]
             self.logger.info(f"Put Strikes: {put_strikes}")
+            
+            if not put_strikes:
+                self.logger.warning("No put strikes available below current price. Cannot resolve put contracts. Aborting.")
+                return
+            
             self.highest_put_strike = put_strikes[-1]
             self._resolve_option_contracts(put_strikes, "P", self.expiration1_str)
 
@@ -205,6 +219,11 @@ class DoubleCalendarBot(BaseBot):
                 self.lowest_call_strike = self.underlying_price
             call_strikes = sorted([strike for strike in filtered_option_chain_data[0]["strikes"] if strike > self.lowest_call_strike], reverse=False)[:10]
             self.logger.info(f"Call Strikes: {call_strikes}")
+            
+            if not call_strikes:
+                self.logger.warning("No call strikes available above current price. Cannot resolve call contracts. Aborting.")
+                return
+            
             self.lowest_call_strike = call_strikes[-1]
             self._resolve_option_contracts(call_strikes, "C", self.expiration1_str)
 

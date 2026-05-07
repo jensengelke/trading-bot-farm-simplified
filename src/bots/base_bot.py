@@ -240,5 +240,9 @@ class BaseBot(metaclass=ABCMeta):
             if context["timer_id"]:
                 self.timer_manager.remove_timer(context["timer_id"])
 
+            # Check if we received any data
+            if not context["data"]:
+                self.logger.warning(f"Option chain resolution for reqId {reqId} returned no data. This may occur outside trading hours.")
+            
             self.logger.debug(f"Calling callback {context['callback']} with data {context['data']}")
             context["callback"](context["data"])

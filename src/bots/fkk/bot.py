@@ -234,7 +234,8 @@ class FkkBot(BaseBot):
     def on_short_contract_found(self, contract, greeks):
         """Callback when short contract is found."""
         if contract is None:
-            self.logger.error("Failed to find short put contract")
+            self.logger.warning("Failed to find short put contract. Data resolution failed - aborting entry.")
+            self.entry_in_progress = False
             return
         
         self.short_contract = contract
@@ -281,7 +282,8 @@ class FkkBot(BaseBot):
     def on_long_contract_found(self, contract, contract_details):
         """Callback when long contract is resolved."""
         if contract is None:
-            self.logger.error("Failed to resolve long put contract")
+            self.logger.warning("Failed to resolve long put contract. Data resolution failed - aborting entry.")
+            self.entry_in_progress = False
             return
         
         self.long_contract = contract
