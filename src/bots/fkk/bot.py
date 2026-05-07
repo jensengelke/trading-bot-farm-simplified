@@ -28,7 +28,6 @@ class FkkBot(BaseBot):
         self.short_contract: Contract = None
         self.long_contract: Contract = None
         self.spread_contract: Contract = None
-        self.spread_contract_details = None
         self.spread_min_tick: float = 0.05  # Default value
         self.spread_price_subscription_reg_id = None
         self.spread_price: dict = None
@@ -288,6 +287,13 @@ class FkkBot(BaseBot):
         self.long_contract = contract
         self.logger.info(f"Found long put: strike={contract.strike}")
         
+        # Extract minTick from contract details
+        if contract_details and hasattr(contract_details, 'minTick'):
+            self.spread_min_tick = contract_details.minTick
+            self.logger.info(f"Using minTick from long contract: {self.spread_min_tick}")
+        else:
+            self.logger.warning(f"Could not retrieve minTick from contract details. Using default: {self.spread_min_tick}")
+        
         # Create the spread contract
         self.create_spread_contract()
         
@@ -313,33 +319,9 @@ class FkkBot(BaseBot):
         leg2.exchange = "SMART"
         contract.comboLegs = [leg1, leg2]
         self.spread_contract = contract
-        
-        # Request contract details to get minTick
-        spread_contract_resolution_status = ContractResolutionStatus()
-        self.resolve_contracts(
-            search_contract=self.spread_contract,
-            status=spread_contract_resolution_status,
-            callback=self.on_spread_contract_details_resolved
-        )
-    
-    @trace
-    def on_spread_contract_details_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
-        """Callback when spread contract details are resolved."""
-        if len(status.errors) == 0 and len(result_contracts) > 0 and status.complete:
-            self.spread_contract_details = result_contracts[0]
-            self.spread_min_tick = self.spread_contract_details.minTick
-            self.logger.info(f"Spread contract minTick: {self.spread_min_tick}")
-            
-            # Now subscribe to market data
-            self.spread_price_subscription_reg_id = self.subscribe_market_data(self.spread_contract, "101,106")
-            self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
-            self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
-        else:
-            self.logger.warning(f"Failed to resolve spread contract details: {status.errors}. Using default minTick: {self.spread_min_tick}")
-            # Continue anyway with default minTick
-            self.spread_price_subscription_reg_id = self.subscribe_market_data(self.spread_contract, "101,106")
-            self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
-            self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
+        self.spread_price_subscription_reg_id = self.subscribe_market_data(contract, "101,106")
+        self.option_market_data_req_ids[self.spread_price_subscription_reg_id] = self.spread_contract
+        self.logger.debug(f"spread_price_subscription_reg_id: {self.spread_price_subscription_reg_id}")
 
     @trace
     def create_order(self):
