@@ -1,6 +1,6 @@
 connection:
   host: "127.0.0.1"
-  port: 4002
+  port: 7497 # 4002
   client_id: 1
   selected_account: "DU5761850" # E.g., U1234567. If empty, uses default/all
 
