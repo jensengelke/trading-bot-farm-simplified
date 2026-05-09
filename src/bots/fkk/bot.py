@@ -328,7 +328,11 @@ class FkkBot(BaseBot):
     @trace
     def create_order(self):
         if self.spread_price == None:
-            self.spread_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id).copy()
+            cached_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id)
+            if cached_price is None:
+                self.logger.warning("Spread price is not available yet in cache. Delaying order creation.")
+                return
+            self.spread_price = cached_price.copy()
 
         # Calculate mid price
         mid_price = (self.spread_price[TickTypeEnum.BID] + self.spread_price[TickTypeEnum.ASK]) / 2
@@ -357,12 +361,14 @@ class FkkBot(BaseBot):
         self.logger.debug(f"tick_price: reqId={reqId}, tickType={tickType}, price={price}, attrib={attrib}")
         if reqId in self.option_market_data_req_ids:
             if self.spread_contract == self.option_market_data_req_ids[reqId]:
-                self.spread_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id).copy()
-                self.logger.debug(f"spread_price: {self.spread_price}")
-                if self.spread_price.get(TickTypeEnum.BID) is not None and self.spread_price.get(TickTypeEnum.ASK) is not None:
-                    self.unsubscribe_market_data(self.spread_contract)
-                    self.logger.debug(f"removing reqid from list: {reqId}")
-                    del self.option_market_data_req_ids[reqId]
-                    self.create_order()
+                cached_price = self.get_cached_price(con_id=None, reg_id=self.spread_price_subscription_reg_id)
+                if cached_price is not None:
+                    self.spread_price = cached_price.copy()
+                    self.logger.debug(f"spread_price: {self.spread_price}")
+                    if self.spread_price.get(TickTypeEnum.BID) is not None and self.spread_price.get(TickTypeEnum.ASK) is not None:
+                        self.unsubscribe_market_data(self.spread_contract)
+                        self.logger.debug(f"removing reqid from list: {reqId}")
+                        del self.option_market_data_req_ids[reqId]
+                        self.create_order()
                 
             

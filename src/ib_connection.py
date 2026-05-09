@@ -82,9 +82,13 @@ class IBConnection(EWrapper, EClient):
             
             # Initiate auto-sync
             logger.debug("Requesting sync data: open orders, positions, and account updates.")
-            if self._client_id == 0:
+            print(f"client: {self._client_id}")
+            if self._client_id == 0:                
                 self.reqAutoOpenOrders(True)
-            self.reqAllOpenOrders()
+                self.reqAllOpenOrders()
+            else:
+                self.reqOpenOrders()
+            
             self.reqPositions()
             
             # Subscribing to account updates is deferred until `managedAccounts` 

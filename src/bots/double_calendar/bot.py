@@ -122,7 +122,7 @@ class DoubleCalendarBot(BaseBot):
         if status in self.pending_contract_resolutions:
             self.pending_contract_resolutions.remove(status)
             # subscribe to market data for the resolved contract
-            req_id = self.subscribe_market_data(result_contracts[0].contract, "10,11,12,13,101,106")
+            req_id = self.subscribe_market_data(result_contracts[0].contract, "101,106")
             self.option_contracts.append(result_contracts[0].contract)
             self.option_market_data_req_ids[req_id] = result_contracts[0].contract
 
