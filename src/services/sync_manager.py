@@ -11,7 +11,7 @@ def load_config(filepath=".config.yaml") -> dict:
         return {}
     with open(filepath, "r") as f:
         return yaml.safe_load(f)
-from ..utils import trace
+from ..utils import trace, get_ib_timezone
 from .flex_query_service import FlexQueryService
 from datetime import datetime, timedelta
 
@@ -418,12 +418,22 @@ class SyncManager:
                 contract = data["contract"]
                 execution = data["execution"]
                 
-                # Parse execution time "YYYYMMDD  hh:mm:ss" or similar
+                # Parse execution time "YYYYMMDD  hh:mm:ss" or "YYYYMMDD  hh:mm:ss TZ"
                 try:
-                    if " " in execution.time:
-                        # Remove extra spaces between date and time
-                        time_str = " ".join(execution.time.split())
-                        exec_time = datetime.strptime(time_str, "%Y%m%d %H:%M:%S")
+                    parts = execution.time.split()
+                    if len(parts) >= 2:
+                        # Join date and time: "YYYYMMDD hh:mm:ss"
+                        dt_str = f"{parts[0]} {parts[1]}"
+                        exec_time = datetime.strptime(dt_str, "%Y%m%d %H:%M:%S")
+                        
+                        # If there's a timezone part, localize it
+                        if len(parts) >= 3:
+                            tz_str = " ".join(parts[2:]) # Handle names with spaces like "US/Central" (though unlikely)
+                            try:
+                                tz = get_ib_timezone(tz_str)
+                                exec_time = exec_time.replace(tzinfo=tz)
+                            except Exception as tz_e:
+                                logger.warning(f"Could not resolve timezone '{tz_str}': {tz_e}")
                     else:
                         exec_time = datetime.strptime(execution.time, "%Y%m%d")
                 except Exception as e:
