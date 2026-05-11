@@ -2,7 +2,7 @@ bot_name: "fkk-2015-10"
 bot_type: "fkk"
 log_level: "INFO"
 timezone: "America/New_York"
-entry_time: "14:33:30"
+entry_time: "14:14:30"
 entry_time_observation_period: 300
 delta: -0.35
 width: 10
