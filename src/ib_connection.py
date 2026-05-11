@@ -93,6 +93,7 @@ class IBConnection(EWrapper, EClient):
                 self.reqOpenOrders()
             
             self.reqPositions()
+            self.reqExecutions(0, ExecutionFilter())
             
             # Subscribing to account updates is deferred until `managedAccounts` 
             # provides the list of available accounts from the broker.
