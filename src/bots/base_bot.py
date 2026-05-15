@@ -6,10 +6,10 @@ from ibapi.order import Order
 from src.bots.config_base import ConfigBase
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
-from src.utils import trace
+from src.utils import trace, is_valid_price
 from src.logging_config import setup_logging
 from src.utils.options_finder import OptionsFinder
-from typing import Optional
+from typing import Optional, Callable
 
 class BaseBotFilter(logging.Filter):
     """
@@ -120,7 +120,81 @@ class BaseBot(metaclass=ABCMeta):
 
     @trace
     def tick_price(self, reqId, tickType, price, attrib):
-        pass
+        self._handle_base_tick_price(reqId, tickType, price, attrib)
+
+    @trace
+    def request_market_data(self, contract: Contract, callback: Callable, timeout_ms: Optional[int] = None):
+        """
+        Request market data and wait for a complete set of prices (Open, High, Low, Close, Bid, Ask).
+        
+        Args:
+            contract: The contract to subscribe to
+            callback: Called with (success, price_data)
+            timeout_ms: Optional timeout in milliseconds. If None, uses global price_retrieval_timeout.
+        """
+        if timeout_ms is None:
+            timeout_ms = self.ib_connection.price_retrieval_timeout * 1000
+
+        req_id = self.subscribe_market_data(contract)
+        
+        from datetime import datetime, timedelta
+        import pytz
+        now = datetime.now(pytz.UTC)
+        trigger_datetime = now + timedelta(milliseconds=timeout_ms)
+        trigger_time_str = trigger_datetime.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+        timer_id = self.timer_manager.add_timer(
+            bot_id=self.config.bot_name,
+            event_name=f"market_data_timeout_{req_id}",
+            callback=self._on_market_data_timeout,
+            event_data={"req_id": req_id, "contract": contract, "callback": callback},
+            trigger_time=trigger_time_str
+        )
+
+        if not hasattr(self, "_market_data_requests"):
+            self._market_data_requests = {}
+        
+        self._market_data_requests[req_id] = {
+            "contract": contract,
+            "callback": callback,
+            "timer_id": timer_id
+        }
+        return req_id
+
+    @trace
+    def _on_market_data_timeout(self, event_name: str, event_data: dict):
+        req_id = event_data["req_id"]
+        contract = event_data["contract"]
+        callback = event_data["callback"]
+
+        if req_id in self._market_data_requests:
+            self.logger.warning(f"Market data request for {contract.symbol} (reqId: {req_id}) timed out.")
+            data = self.get_cached_price(reg_id=req_id)
+            del self._market_data_requests[req_id]
+            self.unsubscribe_market_data(contract)
+            callback(False, data)
+
+    @trace
+    def _handle_base_tick_price(self, reqId, tickType, price, attrib):
+        """Internal handler to check for complete market data."""
+        if not hasattr(self, "_market_data_requests") or reqId not in self._market_data_requests:
+            return
+
+        # IB tickType constants
+        # BID = 1, ASK = 2, LAST = 4, HIGH = 6, LOW = 7, CLOSE = 9, OPEN = 14
+        
+        data = self.get_cached_price(reg_id=reqId)
+        if not data:
+            return
+
+        # We wait for Bid, Ask, Open, High, Low, Close
+        required_ticks = [1, 2, 6, 7, 9, 14]
+        if all(is_valid_price(data.get(t)) for t in required_ticks):
+            context = self._market_data_requests.pop(reqId)
+            self.timer_manager.remove_timer(context["timer_id"])
+            self.unsubscribe_market_data(context["contract"])
+            self.logger.info(f"Complete market data received for {context['contract'].symbol} (reqId: {reqId})")
+            context["callback"](True, data)
 
     @trace
     def tick_option_computation(self, reqId: int, tickType: int, tickAttrib: int, impliedVol: float, delta: float, optPrice: float, pvDividend: float, gamma: float, vega: float, theta: float, undPrice: float):
@@ -240,9 +314,40 @@ class BaseBot(metaclass=ABCMeta):
             if context["timer_id"]:
                 self.timer_manager.remove_timer(context["timer_id"])
 
-            # Check if we received any data
-            if not context["data"]:
-                self.logger.warning(f"Option chain resolution for reqId {reqId} returned no data. This may occur outside trading hours.")
+        # Check if we received any data
+        if not context["data"]:
+            self.logger.warning(f"Option chain resolution for reqId {reqId} returned no data. This may occur outside trading hours.")
+        
+        self.logger.debug(f"Calling callback {context['callback']} with data {context['data']}")
+        context["callback"](context["data"])
+
+    @trace
+    def get_robust_market_data(self, contract: Contract, callback: Callable, timeout_ms: Optional[int] = None):
+        """
+        Request market data and wait for a complete set of prices.
+        This is a convenience method that wraps request_market_data and provides 
+        a standard validation logic in the callback.
+        """
+        def robust_callback(success, price_data):
+            if not price_data:
+                callback(False, None)
+                return
+
+            # Determination logic for a single 'price' from the data
+            # Try Bid/Ask first, then Last, then Close
+            bid = price_data.get(1) # BID
+            ask = price_data.get(2) # ASK
+            last = price_data.get(4) # LAST
+            close = price_data.get(9) # CLOSE
+
+            price = None
+            if is_valid_price(bid) and is_valid_price(ask):
+                price = (bid + ask) / 2
+            elif is_valid_price(last):
+                price = last
+            elif is_valid_price(close):
+                price = close
             
-            self.logger.debug(f"Calling callback {context['callback']} with data {context['data']}")
-            context["callback"](context["data"])
+            callback(success and price is not None, price)
+
+        self.request_market_data(contract, robust_callback, timeout_ms)

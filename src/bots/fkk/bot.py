@@ -238,6 +238,12 @@ class FkkBot(BaseBot):
             self.entry_in_progress = False
             return
         
+        # Check if delta is valid (not infinite)
+        if greeks.delta is None or abs(greeks.delta) >= 1.0 or greeks.delta == 0:
+            self.logger.warning(f"Received suspicious delta for short put: {greeks.delta}. Aborting entry.")
+            self.entry_in_progress = False
+            return
+
         self.short_contract = contract
         self.logger.info(f"Found short put: strike={contract.strike}, delta={greeks.delta:.4f}")
         

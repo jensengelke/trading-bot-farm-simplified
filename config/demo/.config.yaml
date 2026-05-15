@@ -3,6 +3,7 @@ connection:
   port: 4002 #7497
   client_id: 1
   selected_account: "DU5761850" # E.g., U1234567. If empty, uses default/all
+  price_retrieval_timeout: 5 # Default timeout in seconds for price retrieval
 
 database:
   url: "sqlite:///data/trading_farm_demo.db"

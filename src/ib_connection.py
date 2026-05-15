@@ -28,7 +28,7 @@ class IBConnection(EWrapper, EClient):
     Maintains cached state and handles multiplexing data updates.
     """
     @trace
-    def __init__(self, host: str, port: int, client_id: int, selected_account: str = ""):
+    def __init__(self, host: str, port: int, client_id: int, selected_account: str = "", price_retrieval_timeout: int = 5):
         EClient.__init__(self, self)
         
         self.logger = logger
@@ -37,6 +37,7 @@ class IBConnection(EWrapper, EClient):
         self._port = port
         self._client_id = client_id
         self.selected_account = selected_account
+        self.price_retrieval_timeout = price_retrieval_timeout
 
         # Concurrency control
         self._lock = threading.RLock()

@@ -144,9 +144,10 @@ def initialize_connection(config: dict, logger: logging.Logger) -> IBConnection:
     port = conn_config.get("port", 7497)
     client_id = conn_config.get("client_id", 1)
     selected_account = conn_config.get("selected_account", "")
+    price_retrieval_timeout = conn_config.get("price_retrieval_timeout", 5)
     
     logger.info("Initializing IBConnection layer...")
-    ib_conn = IBConnection(host, port, client_id, selected_account)
+    ib_conn = IBConnection(host, port, client_id, selected_account, price_retrieval_timeout)
     ib_conn.reqMarketDataType(2)  # live frozen
     
     return ib_conn

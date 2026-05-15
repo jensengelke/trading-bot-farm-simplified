@@ -48,3 +48,7 @@ def get_ib_timezone(tz_string):
     tz_name = mapping.get(tz_string, tz_string)
     return ZoneInfo(tz_name)
 
+def is_valid_price(val: float) -> bool:
+    """Check if a price value is valid (non-None, positive, and finite)."""
+    return val is not None and -1.797e308 < val < 1.797e308
+

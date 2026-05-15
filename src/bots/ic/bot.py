@@ -144,40 +144,65 @@ class IcBot(BaseBot):
     @trace
     def subscribe_underlying_price(self):
         """Subscribe to SPX market data to get current price."""
-        req_id = self.subscribe_market_data(self.underlying_contract)
-        self.option_market_data_req_ids[req_id] = self.underlying_contract
-        self.logger.info(f"Subscribed to SPX market data, req_id={req_id}")
+        self.logger.info("Requesting robust SPX price...")
+        self.request_market_data(self.underlying_contract, self.on_underlying_price_received)
+
+    @trace
+    def on_underlying_price_received(self, success: bool, price_data: dict):
+        """Callback when underlying price is received."""
+        if not price_data:
+            self.logger.error("Failed to get SPX price data. Aborting entry.")
+            self.entry_in_progress = False
+            return
+
+        if not success:
+            self.logger.warning("Timed out waiting for complete SPX price data. Using partial data.")
+
+        # Try Bid/Ask first, then Last, then Close
+        bid = price_data.get(TickTypeEnum.BID)
+        ask = price_data.get(TickTypeEnum.ASK)
+        last = price_data.get(TickTypeEnum.LAST)
+        close = price_data.get(TickTypeEnum.CLOSE)
+
+        if bid is not None and ask is not None and bid > 0 and ask > 0 and bid < 1e308 and ask < 1e308:
+            underlying_price = (bid + ask) / 2
+        elif last is not None and last > 0 and last < 1e308:
+            underlying_price = last
+        elif close is not None and close > 0 and close < 1e308:
+            underlying_price = close
+        else:
+            self.logger.error(f"No valid SPX price found in data: {price_data}. Aborting entry.")
+            self.entry_in_progress = False
+            return
+
+        self.logger.info(f"SPX price determined: {underlying_price:.2f}")
+        # Start finding put spread
+        self.find_put_short(underlying_price)
 
     @trace
     def tick_price(self, reqId, tickType, price, attrib):
         """Handle market data price updates."""
+        # Call base class to handle robust market data requests
+        super().tick_price(reqId, tickType, price, attrib)
+        
         if reqId not in self.option_market_data_req_ids:
             return
         
         contract = self.option_market_data_req_ids[reqId]
         
-        # Handle SPX underlying price
-        if contract == self.underlying_contract:
-            cached_data = self.get_cached_price(reg_id=reqId)
+        # Handle IC spread price (we still handle this manually because BAG contracts 
+        # might not provide all OHLC ticks)
+        if contract == self.ic_spread_contract:
+            data = self.get_cached_price(reg_id=reqId)
+            if not data: return
+            self.ic_spread_price = data.copy()
             
-            # Wait for both bid and ask
-            if cached_data.get(TickTypeEnum.BID) is not None and cached_data.get(TickTypeEnum.ASK) is not None:
-                underlying_price = (cached_data[TickTypeEnum.BID] + cached_data[TickTypeEnum.ASK]) / 2
-                self.logger.info(f"SPX price: {underlying_price:.2f}")
-                
-                # Unsubscribe from underlying
-                self.unsubscribe_market_data(self.underlying_contract)
-                del self.option_market_data_req_ids[reqId]
-                
-                # Start finding put spread
-                self.find_put_short(underlying_price)
-        
-        # Handle IC spread price
-        elif contract == self.ic_spread_contract:
-            self.ic_spread_price = self.get_cached_price(reg_id=reqId).copy()
+            bid = self.ic_spread_price.get(TickTypeEnum.BID)
+            ask = self.ic_spread_price.get(TickTypeEnum.ASK)
             
-            if self.ic_spread_price.get(TickTypeEnum.BID) is not None and self.ic_spread_price.get(TickTypeEnum.ASK) is not None:
-                self.logger.info(f"IC spread price - Bid: {self.ic_spread_price[TickTypeEnum.BID]}, Ask: {self.ic_spread_price[TickTypeEnum.ASK]}")
+            if bid is not None and ask is not None and bid > -1e308 and ask < 1e308:
+                # For BAG, Bid/Ask can be negative, so we just check for infinite
+                self.logger.info(f"IC spread price - Bid: {bid}, Ask: {ask}")
                 
                 # Unsubscribe and place order
                 self.unsubscribe_market_data(self.ic_spread_contract)
@@ -260,21 +285,20 @@ class IcBot(BaseBot):
         """Find the short call by delta."""
         self.logger.info(f"Finding short call with delta {self.config.call_short_delta}")
         
-        # Get current underlying price from cached data
-        cached_data = self.get_cached_price(con_id=self.underlying_contract.conId)
-        if cached_data.get(TickTypeEnum.LAST) is not None:
-            underlying_price = cached_data[TickTypeEnum.LAST]
-        else:
-            # Fallback: use mid of bid/ask if available
-            bid = cached_data.get(TickTypeEnum.BID)
-            ask = cached_data.get(TickTypeEnum.ASK)
-            if bid is not None and ask is not None:
-                underlying_price = (bid + ask) / 2
-            else:
-                self.logger.error("Cannot determine underlying price for call search")
-                self.entry_in_progress = False
-                return
-        
+        # Request robust market data for underlying again to ensure we have fresh price
+        self.get_robust_market_data(self.underlying_contract, self.on_call_short_underlying_price_received)
+
+    @trace
+    def on_call_short_underlying_price_received(self, success: bool, underlying_price: Optional[float]):
+        """Callback when underlying price for call search is received."""
+        if underlying_price is None:
+            self.logger.error("Cannot determine underlying price for call search. Aborting entry.")
+            self.entry_in_progress = False
+            return
+
+        if not success:
+            self.logger.warning("Timed out waiting for complete SPX price for call search. Using best available.")
+
         self.options_finder.find_option_by_delta(
             underlying=self.underlying_contract,
             underlying_price=underlying_price,
@@ -405,6 +429,8 @@ class IcBot(BaseBot):
                         f"Ask: {self.ic_spread_price[TickTypeEnum.ASK]:.2f}, "
                         f"Mid: {mid_price:.2f}, minTick: {self.ic_spread_min_tick}, "
                         f"Adjusted Limit: {adjusted_lmt_price:.2f}")
+
+        self.logger.info(f"Placing iron condor order...{self.ic_spread_contract}")
         
         order = Order()
         order.action = "BUY"  # BUY the iron condor (selling premium)
@@ -414,7 +440,8 @@ class IcBot(BaseBot):
         order.lmtPrice = adjusted_lmt_price
         
         # Allow legs to be filled independently if needed
-        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+        order.smartComboRoutingParams = []
+        order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))
         
         order_id = self.place_order(self.ic_spread_contract, order)
         
