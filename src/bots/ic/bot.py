@@ -376,34 +376,35 @@ class IcBot(BaseBot):
         put_short_leg.conId = self.put_short_contract.conId
         put_short_leg.ratio = 1
         put_short_leg.action = "SELL"
-        put_short_leg.exchange = "SMART"
+        put_short_leg.exchange = "CBOE"
         
         put_long_leg = ComboLeg()
         put_long_leg.conId = self.put_long_contract.conId
         put_long_leg.ratio = 1
         put_long_leg.action = "BUY"
-        put_long_leg.exchange = "SMART"
+        put_long_leg.exchange = "CBOE"
         
         # Call spread legs
         call_short_leg = ComboLeg()
         call_short_leg.conId = self.call_short_contract.conId
         call_short_leg.ratio = 1
         call_short_leg.action = "SELL"
-        call_short_leg.exchange = "SMART"
+        call_short_leg.exchange = "CBOE"
         
         call_long_leg = ComboLeg()
         call_long_leg.conId = self.call_long_contract.conId
         call_long_leg.ratio = 1
         call_long_leg.action = "BUY"
-        call_long_leg.exchange = "SMART"
+        call_long_leg.exchange = "CBOE"
         
         contract.comboLegs = [put_short_leg, put_long_leg, call_short_leg, call_long_leg]
         
         self.ic_spread_contract = contract
         
         self.logger.info(f"Iron Condor structure:")
-        self.logger.info(f"  Put spread: SELL {self.put_short_contract.strike}P / BUY {self.put_long_contract.strike}P")
-        self.logger.info(f"  Call spread: SELL {self.call_short_contract.strike}C / BUY {self.call_long_contract.strike}C")
+        self.logger.info(f"  Put spread: SELL {self.put_short_contract.strike}P (conId={put_short_leg.conId}) / BUY {self.put_long_contract.strike}P (conId={put_long_leg.conId})")
+        self.logger.info(f"  Call spread: SELL {self.call_short_contract.strike}C (conId={call_short_leg.conId}) / BUY {self.call_long_contract.strike}C (conId={call_long_leg.conId})")
+        self.logger.info(f"  Total legs in contract: {len(contract.comboLegs)}")
         
         # Subscribe to spread price
         req_id = self.subscribe_market_data(contract, "101,106")
@@ -431,17 +432,24 @@ class IcBot(BaseBot):
                         f"Adjusted Limit: {adjusted_lmt_price:.2f}")
 
         self.logger.info(f"Placing iron condor order...{self.ic_spread_contract}")
+        if self.ic_spread_contract and hasattr(self.ic_spread_contract, "comboLegs"):
+            self.logger.info(f"Contract legs count: {len(self.ic_spread_contract.comboLegs)}")
+            for i, leg in enumerate(self.ic_spread_contract.comboLegs):
+                self.logger.info(f"  Leg {i}: conId={leg.conId}, action={leg.action}, ratio={leg.ratio}, exchange={leg.exchange}")
         
         order = Order()
         order.action = "BUY"  # BUY the iron condor (selling premium)
         order.tif = "DAY"
         order.totalQuantity = 1
         order.orderType = "LMT"
-        order.lmtPrice = adjusted_lmt_price
+        order.lmtPrice = float(adjusted_lmt_price) # Ensure float
         
         # Allow legs to be filled independently if needed
         order.smartComboRoutingParams = []
         order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))
+        
+        self.logger.info(f"Order params - type: {order.orderType}, lmtPrice: {order.lmtPrice} ({type(order.lmtPrice)}), "
+                        f"routingParams: {[(tv.tag, tv.value) for tv in order.smartComboRoutingParams]}")
         
         order_id = self.place_order(self.ic_spread_contract, order)
         
