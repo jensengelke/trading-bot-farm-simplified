@@ -46,6 +46,11 @@ class IcBot(BaseBot):
         self.entry_in_progress = False
         self.expiration_date: Optional[str] = None
 
+        # Order tracking
+        self.entry_perm_id: Optional[int] = None
+        self.tp_order_id: Optional[int] = None
+        self.tp_placed = False
+
     @trace
     def start(self):
         """Called when bot is started."""
@@ -455,9 +460,81 @@ class IcBot(BaseBot):
         
         if order_id:
             self.logger.info(f"Iron condor order placed: order_id={order_id}")
+            # Capture the permId for tracking. Since we just placed it, 
+            # we need to wait for the openOrder callback or check the cache.
+            # However, BaseBot.place_order calls ib_connection.place_order which 
+            # uses next_order_id. The permId is returned by IBKR in openOrder.
+            # We will use the transient order_id to map it to permId in order_status/open_order.
+            self.entry_order_id = order_id
         else:
             self.logger.error("Failed to place iron condor order")
         
         self.entry_in_progress = False
+
+    @trace
+    def order_status(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
+        """Override to handle entry order fill and trigger TP."""
+        super().order_status(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
+        
+        # Identify our entry order
+        if hasattr(self, 'entry_order_id') and orderId == self.entry_order_id:
+            if self.entry_perm_id is None:
+                self.entry_perm_id = permId
+                self.logger.info(f"Entry order {orderId} mapped to permId {permId}")
+
+        # If entry order is filled, place take profit
+        if self.entry_perm_id == permId and status == "Filled" and not self.tp_placed:
+            self.logger.info(f"Entry order filled at {avgFillPrice}. Placing take profit order.")
+            self.tp_placed = True
+            self.place_take_profit_order(avgFillPrice)
+            
+        # If TP order is filled, restart the bot for the next day
+        if hasattr(self, 'tp_order_id') and orderId == self.tp_order_id and status == "Filled":
+            self.logger.info("Take profit order filled. Restarting bot for the next day.")
+            self.clear_internal_state()
+            self.start()
+
+    @trace
+    def place_take_profit_order(self, entry_price: float):
+        """Calculate TP price and place the GTC closing order."""
+        # Calculate TP price
+        # Example: entry_price = -5.10 (credit)
+        # We want to keep 10% of the credit. 
+        # So we buy it back at 90% of the price.
+        # target = -5.10 * (1 - 0.10) = -4.59
+        tp_percent = getattr(self.config, 'take_profit_percent', 10.0) / 100.0
+        target_price = entry_price * (1.0 - tp_percent)
+        
+        # Round to next multiple of 0.1
+        # Example: -4.59 -> -4.50
+        rounding_step = getattr(self.config, 'rounding_step', 0.1)
+        
+        # "Next multiple" for a credit buyback means rounding TOWARDS zero 
+        # to ensure we actually keep AT LEAST 10%.
+        # For negative numbers, math.ceil(x / step) * step rounds towards zero.
+        import math
+        tp_price = math.ceil(target_price / rounding_step) * rounding_step
+        
+        self.logger.info(f"TP Calculation: Entry={entry_price}, Target={target_price:.4f}, Rounded TP={tp_price:.2f}")
+        
+        # Place the closing order
+        order = Order()
+        order.action = "SELL" # Close the "BUY" (credit) iron condor
+        order.tif = getattr(self.config, 'tp_tif', "GTC")
+        order.totalQuantity = 1
+        order.orderType = "LMT"
+        order.lmtPrice = float(round(tp_price, 2))
+        
+        # Allow legs to be filled independently
+        order.smartComboRoutingParams = []
+        order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))
+        
+        tp_order_id = self.place_order(self.ic_spread_contract, order)
+        if tp_order_id:
+            self.tp_order_id = tp_order_id
+            self.logger.info(f"Take profit order placed: order_id={tp_order_id}, price={order.lmtPrice}, tif={order.tif}")
+        else:
+            self.logger.error("Failed to place take profit order")
+            self.tp_placed = False # Reset to allow retry if needed
 
 # Made with Bob

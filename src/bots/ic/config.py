@@ -20,5 +20,10 @@ class IcConfig(ConfigBase):
     
     # Test mode
     test_mode: bool = False
+    
+    # Take Profit configuration
+    take_profit_percent: float = 10.0  # Percentage of credit to keep
+    rounding_step: float = 0.1        # Round TP price to this multiple
+    tp_tif: str = "GTC"               # Time in force for TP order
 
 # Made with Bob
