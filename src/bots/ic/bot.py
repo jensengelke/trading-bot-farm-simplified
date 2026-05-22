@@ -381,26 +381,26 @@ class IcBot(BaseBot):
         put_short_leg.conId = self.put_short_contract.conId
         put_short_leg.ratio = 1
         put_short_leg.action = "SELL"
-        put_short_leg.exchange = "CBOE"
+        put_short_leg.exchange = "SMART"
         
         put_long_leg = ComboLeg()
         put_long_leg.conId = self.put_long_contract.conId
         put_long_leg.ratio = 1
         put_long_leg.action = "BUY"
-        put_long_leg.exchange = "CBOE"
+        put_long_leg.exchange = "SMART"
         
         # Call spread legs
         call_short_leg = ComboLeg()
         call_short_leg.conId = self.call_short_contract.conId
         call_short_leg.ratio = 1
         call_short_leg.action = "SELL"
-        call_short_leg.exchange = "CBOE"
+        call_short_leg.exchange = "SMART"
         
         call_long_leg = ComboLeg()
         call_long_leg.conId = self.call_long_contract.conId
         call_long_leg.ratio = 1
         call_long_leg.action = "BUY"
-        call_long_leg.exchange = "CBOE"
+        call_long_leg.exchange = "SMART"
         
         contract.comboLegs = [put_short_leg, put_long_leg, call_short_leg, call_long_leg]
         

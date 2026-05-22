@@ -9,6 +9,7 @@ The project is currently focused on stabilizing the FKK bot strategy and resolvi
 - Integration of Flex Query for historical data synchronization.
 - Development of the `OptionsFinder` utility for automated option selection.
 - Refinement of `BotManager` for dynamic bot loading.
+- **Commit 89d0c6d5**: Added detailed debug logging for combo order placement in FKK and IC bots. Expanded demo configurations to test concurrency with varying entry times and spread widths.
 
 ## Active Decisions and Considerations
 - **Order Cache Keying**: Decisions were made to use `permId` instead of transient `orderId` for tracking orders across sessions.
