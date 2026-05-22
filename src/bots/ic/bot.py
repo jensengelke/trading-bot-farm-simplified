@@ -436,7 +436,7 @@ class IcBot(BaseBot):
                         f"Mid: {mid_price:.2f}, minTick: {self.ic_spread_min_tick}, "
                         f"Adjusted Limit: {adjusted_lmt_price:.2f}")
 
-        self.logger.info(f"Placing iron condor order...{self.ic_spread_contract}")
+        self.logger.info(f"Placing iron condor order for contract...{self.ic_spread_contract}")
         if self.ic_spread_contract and hasattr(self.ic_spread_contract, "comboLegs"):
             self.logger.info(f"Contract legs count: {len(self.ic_spread_contract.comboLegs)}")
             for i, leg in enumerate(self.ic_spread_contract.comboLegs):
@@ -450,8 +450,7 @@ class IcBot(BaseBot):
         order.lmtPrice = float(adjusted_lmt_price) # Ensure float
         
         # Allow legs to be filled independently if needed
-        order.smartComboRoutingParams = []
-        order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "1"))
+        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
         
         self.logger.info(f"Order params - type: {order.orderType}, lmtPrice: {order.lmtPrice} ({type(order.lmtPrice)}), "
                         f"routingParams: {[(tv.tag, tv.value) for tv in order.smartComboRoutingParams]}")

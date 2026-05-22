@@ -348,6 +348,12 @@ class FkkBot(BaseBot):
         
         self.logger.info(f"Order pricing - Bid: {self.spread_price[TickTypeEnum.BID]}, Ask: {self.spread_price[TickTypeEnum.ASK]}, Mid: {mid_price:.4f}, minTick: {self.spread_min_tick}, Adjusted Limit: {adjusted_lmt_price:.4f}")
 
+        self.logger.info(f"Placing iron condor order for contract...{self.spread_contract}")
+        if self.spread_contract and hasattr(self.spread_contract, "comboLegs"):
+            self.logger.info(f"Contract legs count: {len(self.spread_contract.comboLegs)}")
+            for i, leg in enumerate(self.spread_contract.comboLegs):
+                self.logger.info(f"  Leg {i}: conId={leg.conId}, action={leg.action}, ratio={leg.ratio}, exchange={leg.exchange}")
+
         order = Order()
         order.action = "BUY"
         order.tif = "DAY"
@@ -360,6 +366,10 @@ class FkkBot(BaseBot):
         # Without this flag, many combos will be rejected
         # If a leg cannot be filled, the entire combo order will be rejected
         order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+
+        self.logger.info(f"Order params - type: {order.orderType}, lmtPrice: {order.lmtPrice} ({type(order.lmtPrice)}), "
+                        f"routingParams: {[(tv.tag, tv.value) for tv in order.smartComboRoutingParams]}")
+        
         self.place_order(self.spread_contract, order)
     
     @trace
