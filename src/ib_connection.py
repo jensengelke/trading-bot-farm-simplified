@@ -526,6 +526,7 @@ class IBConnection(EWrapper, EClient):
             self.next_order_id += 1
         
         logger.info(f"Placing Order {order_id} for {contract.symbol}: {order.action} {order.totalQuantity} with orderRef: {order.orderRef if hasattr(order, 'orderRef') and order.orderRef else 'N/A'}")
+        order.account=self.selected_account  # Ensure order is placed under the selected account
         self.placeOrder(order_id, contract, order)
         return order_id
 

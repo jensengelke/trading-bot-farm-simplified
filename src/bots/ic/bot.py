@@ -447,11 +447,12 @@ class IcBot(BaseBot):
         order.tif = "DAY"
         order.totalQuantity = 1
         order.orderType = "LMT"
-        order.lmtPrice = float(adjusted_lmt_price) # Ensure float
+        order.lmtPrice = round(float(adjusted_lmt_price), 2) # Ensure float and 2 decimal places
         
         # Allow legs to be filled independently if needed
-        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
-        
+        order.smartComboRoutingParams = []
+        order.smartComboRoutingParams.append(TagValue('NonGuaranteed', "0"))
+        # order.transmit=False # This allows adding the order to TWS, but the user still needs to manually click "Transmit" in TWS. This can be a safety measure to review the order before sending. Uncomment if you want this behavior.
         self.logger.info(f"Order params - type: {order.orderType}, lmtPrice: {order.lmtPrice} ({type(order.lmtPrice)}), "
                         f"routingParams: {[(tv.tag, tv.value) for tv in order.smartComboRoutingParams]}")
         
