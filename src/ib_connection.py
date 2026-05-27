@@ -58,6 +58,7 @@ class IBConnection(EWrapper, EClient):
         self._connected_event = threading.Event()
         self.api_thread: Optional[threading.Thread] = None
         self.account_sync_complete: bool = False  # Set to True when accountDownloadEnd is called
+        self.reconnect_allowed: bool = True  # Flag to allow/disallow auto-reconnection
         
         self.request_listeners: Dict[int, list] = {} # reqId -> listener for a specific request
         # Subscriptions tracking

@@ -231,6 +231,7 @@ class MenuHandler:
         self.sync_manager = sync_manager
         self.selected_account = selected_account
         self.logger = logger
+        self._watchdog_timer_id = None
         
         # Menu dispatch table
         self.handlers = {
@@ -245,6 +246,7 @@ class MenuHandler:
     
     def handle_connect(self) -> bool:
         """Handle connection request. Returns True to continue loop."""
+        self.ib_conn.reconnect_allowed = True
         if not self.ib_conn.isConnected():
             self.logger.info("Attempting connection...")
             success = self.ib_conn.connect_and_start()
@@ -252,10 +254,14 @@ class MenuHandler:
                 self._perform_sync()
         else:
             self.logger.info("Already connected.")
+        
+        self.start_connection_watchdog()
         return True
     
     def handle_disconnect(self) -> bool:
         """Handle disconnection request. Returns True to continue loop."""
+        self.ib_conn.reconnect_allowed = False
+        self.stop_connection_watchdog()
         if self.ib_conn.isConnected():
             self.bot_manager.stop_all_bots()
             self.ib_conn.disconnect_and_stop()
@@ -266,7 +272,9 @@ class MenuHandler:
     def handle_status(self) -> bool:
         """Handle status check. Returns True to continue loop."""
         status = "Connected" if self.ib_conn.isConnected() else "Disconnected"
-        message = f"Connection Status: {status}"
+        watchdog = "Active" if self._watchdog_timer_id else "Inactive"
+        reconnect_allowed = "Yes" if self.ib_conn.reconnect_allowed else "No"
+        message = f"Connection Status: {status} (Watchdog: {watchdog}, Auto-Reconnect: {reconnect_allowed})"
         print(message)
         self.logger.info(message)
         return True
@@ -292,11 +300,38 @@ class MenuHandler:
     def handle_exit(self) -> bool:
         """Handle exit request. Returns False to stop loop."""
         self.logger.info("Exiting application...")
+        self.stop_connection_watchdog()
         if self.ib_conn.isConnected():
             self.bot_manager.stop_all_bots()
             self.ib_conn.disconnect_and_stop()
         return False
     
+    def start_connection_watchdog(self):
+        """Starts a timer to check connection every 10 seconds."""
+        if self._watchdog_timer_id:
+            return
+            
+        self.logger.info("Starting connection watchdog timer (10s interval)...")
+        self._watchdog_timer_id = self.bot_manager.timer_manager.add_timer(
+            bot_id="system",
+            event_name="connection_watchdog",
+            callback=self._reconnect_check_callback,
+            cron_expression="*/10 * * * * *" # Every 10 seconds
+        )
+
+    def stop_connection_watchdog(self):
+        """Stops the connection watchdog timer."""
+        if self._watchdog_timer_id:
+            self.logger.info("Stopping connection watchdog timer.")
+            self.bot_manager.timer_manager.remove_timer(self._watchdog_timer_id)
+            self._watchdog_timer_id = None
+
+    def _reconnect_check_callback(self, event_name, event_data):
+        """Callback to check connection and reconnect if allowed."""
+        if not self.ib_conn.isConnected() and self.ib_conn.reconnect_allowed:
+            self.logger.warning("Connection watchdog detected disconnection. Attempting auto-reconnect...")
+            self.handle_connect()
+
     def _perform_sync(self) -> None:
         """Helper to perform account sync."""
         self.logger.info(f"Performing sync for account {self.selected_account}...")
@@ -359,6 +394,9 @@ def run_cli_loop(menu_handler: MenuHandler) -> None:
 
 def main():
     """Main entry point for Trading Bot Farm V2."""
+    # Ensure data directory exists
+    os.makedirs("data", exist_ok=True)
+    
     # Parse arguments
     parser = argparse.ArgumentParser(description="Trading Bot Farm V2")
     parser.add_argument("--config-dir", default="config/default",
@@ -389,6 +427,10 @@ def main():
         # Create menu handler and run CLI loop
         menu_handler = MenuHandler(ib_conn, bot_manager, sync_manager,
                                    selected_account, logger)
+        
+        # Start connection watchdog by default
+        menu_handler.start_connection_watchdog()
+        
         run_cli_loop(menu_handler)
 
 if __name__ == "__main__":
