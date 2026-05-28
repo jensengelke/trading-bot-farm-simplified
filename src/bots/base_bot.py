@@ -202,11 +202,11 @@ class BaseBot(metaclass=ABCMeta):
 
     @trace
     def order_status(self, orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):
-        pass
+        self.logger.debug(f"order_status: orderId={orderId}, status={status}, filled={filled}, remaining={remaining}, avgFillPrice={avgFillPrice}, permId={permId}, parentId={parentId}, lastFillPrice={lastFillPrice}, clientId={clientId}, whyHeld={whyHeld}, mktCapPrice={mktCapPrice}")
 
     @trace
     def exec_details(self, reqId, contract, execution):
-        pass
+        self.logger.debug(f"exec_details: reqId={reqId}, contract={contract.symbol}, execution={execution.execId}")
 
     @trace
     def get_cached_price(self, con_id: int = None, reg_id: int = None):
@@ -224,7 +224,7 @@ class BaseBot(metaclass=ABCMeta):
 
     @trace
     def open_order(self, orderId, contract, order, orderState):
-        pass
+        self.logger.debug(f"open_order: orderId={orderId}, contract={contract.symbol}, order={order.orderRef}, orderState={orderState.status}")
 
     @trace
     def on_timer(self, event_name: str, event_data: any = None):

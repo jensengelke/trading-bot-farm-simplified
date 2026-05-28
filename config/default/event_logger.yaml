@@ -1,0 +1,3 @@
+bot_name: "event-logger-1"
+bot_type: "event_logger"
+log_level: "INFO"
