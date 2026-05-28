@@ -136,6 +136,9 @@ class IBConnection(EWrapper, EClient):
         # IB produces many informational "errors". Only log important ones as actual errors.
         if errorCode in [2104, 2106, 2158]:
             logger.debug(f"IB Info [{errorCode}]: {errorString}")
+        elif errorCode in [2119, 2108, 2107]:
+            # Transient data farm errors. Log as warning.
+            logger.warning(f"IB Data Farm Warning [{errorCode}]: {errorString}")
         else:
             logger.error(f"IB Error [{errorCode}]: {errorString}")
 
