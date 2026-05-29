@@ -41,6 +41,12 @@ class EventLoggerBot(BaseBot):
 
     def open_order(self, orderId, contract, order, orderState):
         """Called for open orders."""
+        def safe_get(obj, *attrs):
+            for attr in attrs:
+                if hasattr(obj, attr):
+                    return getattr(obj, attr)
+            return None
+
         event_data = {
             "orderId": orderId,
             "contract": {
@@ -70,10 +76,10 @@ class EventLoggerBot(BaseBot):
                 "initMarginAfter": orderState.initMarginAfter,
                 "maintMarginAfter": orderState.maintMarginAfter,
                 "equityWithLoanAfter": orderState.equityWithLoanAfter,
-                "commission": orderState.commission,
-                "minCommission": orderState.minCommission,
-                "maxCommission": orderState.maxCommission,
-                "commissionCurrency": orderState.commissionCurrency,
+                "commission": safe_get(orderState, "commissionAndFees", "commission"),
+                "minCommission": safe_get(orderState, "minCommissionAndFees", "minCommission"),
+                "maxCommission": safe_get(orderState, "maxCommissionAndFees", "maxCommission"),
+                "commissionCurrency": safe_get(orderState, "commissionAndFeesCurrency", "commissionCurrency"),
                 "warningText": orderState.warningText
             }
         }

@@ -25,6 +25,7 @@
 ## Known Issues
 - Request maintenance logic in bots might need more robust tracking of different request types.
 - Occasional connection timeouts to TWS/Gateway.
+- **Fixed**: `AttributeError` in `EventLoggerBot.open_order` due to `ibapi` version differences in `OrderState` attributes (e.g., `commission` vs `commissionAndFees`).
 
 ## Evolution of Project Decisions
 1. **From Single to Shared Connection**: Shifted from individual bot connections to a centralized `IBConnection` for efficiency.
