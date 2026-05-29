@@ -3,7 +3,7 @@ from src.bots.config_base import ConfigBase
 class FkkConfig(ConfigBase):
     timezone: str = "America/New_York"
     entry_time: str = "14:15"
-    entry_time_observation_period: int = 300
+    entry_timeout_seconds: int = 300 # 5 minutes
     delta: float = -0.35
     width: int = 5
     sma_period: int = 5

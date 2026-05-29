@@ -44,7 +44,9 @@ class DoubleCalendarBot(BaseBot):
         if self.config.test_mode:
             tz_name = self.config.timezone if hasattr(self.config, "timezone") else "UTC"
             tz = pytz.timezone(tz_name)
-            trigger_time = (datetime.now(tz) + timedelta(seconds=1)).strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
+            trigger_datetime = datetime.now(tz) + timedelta(seconds=1)
+            self.scheduled_entry_time = trigger_datetime
+            trigger_time = trigger_datetime.strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
             self.timer_manager.add_timer(self.config.bot_name, "start", self.on_timer, trigger_time=trigger_time)
 
     def stop(self):
@@ -52,6 +54,13 @@ class DoubleCalendarBot(BaseBot):
 
     def tick_price(self, reqId, tickType, price, attrib):
         self.logger.info(f"DoubleCalendarBot received tick: {reqId}, {tickType}, {price}")
+        if self.is_entry_timeout_exceeded():
+            if self.underlying_market_data_req_id:
+                self.unsubscribe_market_data(self.underlying)
+                self.underlying_market_data_req_id = None
+            self.start()
+            return
+
         if reqId == self.underlying_market_data_req_id:
             self.underlying_pricedata = self.get_cached_price(self.underlying.conId)
             self.logger.info(f"Underlying market data received: {self.underlying_pricedata}")
@@ -85,6 +94,10 @@ class DoubleCalendarBot(BaseBot):
     def on_timer(self, event_name: str, event_data: any = None):
         self.logger.info(f"DoubleCalendarBot received timer event: {event_name}")
         if event_name == "start":
+            if self.is_entry_timeout_exceeded():
+                self.logger.info("Timeout exceeded. Rescheduling for tomorrow.")
+                self.start()
+                return
             self.test_start()
         elif event_name == "stop":
             self.test_stop()
@@ -106,6 +119,9 @@ class DoubleCalendarBot(BaseBot):
         callback=self.on_underlying_contract_resolved)           
 
     def on_underlying_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
+        if self.is_entry_timeout_exceeded():
+            self.start()
+            return
         self.logger.info("on_underlying_contract_resolved() called")
         self.logger.info(f"Underlying contract candidates: {result_contracts}")
         if len(result_contracts) > 0:
@@ -116,6 +132,9 @@ class DoubleCalendarBot(BaseBot):
             self.logger.error("No underlying contract found")
 
     def on_option_contract_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
+        if self.is_entry_timeout_exceeded():
+            self.start()
+            return
         self.logger.info("on_option_contract_resolved() called")
         self.logger.info(f"Option contract resolved: {result_contracts}")
         self.logger.info(f"TradingClass {result_contracts[0].contract.tradingClass}")
@@ -148,6 +167,9 @@ class DoubleCalendarBot(BaseBot):
             self.pending_contract_resolutions.append(status)
 
     def on_option_chain_resolved(self, option_chain_data: list[dict], resolve_puts: bool = True, resolve_calls: bool = True):
+        if self.is_entry_timeout_exceeded():
+            self.start()
+            return
         self.logger.info(f"on_option_chain_resolved() called")
         # keep the option_chain for later use
         self.option_chain_data = option_chain_data

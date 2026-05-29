@@ -55,6 +55,7 @@ class FkkBot(BaseBot):
                 entry_datetime += timedelta(days=1)
         
         self.logger.info(f"entry_datetime: {entry_datetime}")
+        self.scheduled_entry_time = entry_datetime
         trigger_time = entry_datetime.strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
         self.timer_manager.add_timer(self.config.bot_name, "confirm_entry_conditions", self.on_timer, trigger_time=trigger_time)
 
@@ -73,12 +74,13 @@ class FkkBot(BaseBot):
 
     @trace
     def on_confirm_entry_conditions(self):
-        self.clear_internal_state()
-        now = datetime.now(pytz.timezone(self.config.timezone))
-        trigger_datetime = now + timedelta(seconds=self.config.entry_time_observation_period)
-        trigger_time = trigger_datetime.strftime(f"%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
-        self.stop_timer_id = self.timer_manager.add_timer(self.config.bot_name, "stop_confirm_entry_conditions", self.on_timer, trigger_time=trigger_time)
+        if self.is_entry_timeout_exceeded():
+            self.logger.info("Timeout exceeded before starting observation. Rescheduling for tomorrow.")
+            self.clear_internal_state()
+            self.start()
+            return
 
+        self.clear_internal_state()
         # resolve underlying SPX contract
         self.underlying_contract = Contract()
         self.underlying_contract.symbol = "SPX"
@@ -93,6 +95,11 @@ class FkkBot(BaseBot):
            
     @trace
     def on_confirm_entry_conditions_on_underlying_contract_resolved(self,status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
+        if self.is_entry_timeout_exceeded():
+            self.clear_internal_state()
+            self.start()
+            return
+
         if len(status.errors) == 0 and len(result_contracts) == 1 and status.complete:
             self.underlying_contract_details = result_contracts[0]
             self.underlying_contract = self.underlying_contract_details.contract
@@ -150,6 +157,12 @@ class FkkBot(BaseBot):
 
     @trace
     def on_historical_data_end(self, bars):
+        if self.is_entry_timeout_exceeded():
+            self.on_stop_confirm_entry_conditions()
+            self.clear_internal_state()
+            self.start()
+            return
+
         self.historical_bars = bars
         # Don't set to None here - we need to keep the req_id to cancel the subscription later
         self.evaluate_entry_conditions()
@@ -157,6 +170,12 @@ class FkkBot(BaseBot):
     @trace
     def on_historical_data_update(self, bar):
         # This callback is invoked about once every 5 seconds when keepUpToDate is active after on historical_data_end() has retrieved the initial set of bars 
+        if self.is_entry_timeout_exceeded():
+            self.on_stop_confirm_entry_conditions()
+            self.clear_internal_state()
+            self.start()
+            return
+
         self.logger.info(f"Historical data update received, reevaluating entry conditions: {bar}")
         for i, b in enumerate(self.historical_bars):
             if b.date == bar.date:
@@ -191,15 +210,6 @@ class FkkBot(BaseBot):
             self.logger.info("Entry conditions are met.")
             # Set flag to prevent re-entry
             self.entry_in_progress = True
-            # Remove the stop timer and proceed with entry
-            if hasattr(self, 'stop_timer_id') and self.stop_timer_id:
-                timer_id = self.stop_timer_id
-                if timer_id in self.timer_manager.timers:
-                    self.timer_manager.remove_timer(timer_id)
-                    self.stop_timer_id = None
-                else:
-                    self.logger.warning(f"Timer {timer_id} not found in timer manager (may have already fired)")
-                    self.stop_timer_id = None
             self.on_stop_confirm_entry_conditions()
             self.on_entry_conditions_are_met()
         else:
@@ -234,6 +244,12 @@ class FkkBot(BaseBot):
     @trace
     def on_short_contract_found(self, contract, greeks):
         """Callback when short contract is found."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if contract is None:
             self.logger.warning("Failed to find short put contract. Data resolution failed - aborting entry.")
             self.entry_in_progress = False
@@ -288,6 +304,12 @@ class FkkBot(BaseBot):
     @trace
     def on_long_contract_found(self, contract, contract_details):
         """Callback when long contract is resolved."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if contract is None:
             self.logger.warning("Failed to resolve long put contract. Data resolution failed - aborting entry.")
             self.entry_in_progress = False

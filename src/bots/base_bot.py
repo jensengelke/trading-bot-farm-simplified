@@ -45,6 +45,7 @@ class BaseBot(metaclass=ABCMeta):
         self._contract_resolution_requests = {}
         self._option_chain_resolution_requests = {}
         self._historical_data_requests = {}
+        self.scheduled_entry_time: Optional[datetime] = None
 
     @trace
     def request_historical_data(self, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int, keep_up_to_date: bool, callback_historical_data_end, callback_historical_data_update=None) -> int:
@@ -229,6 +230,34 @@ class BaseBot(metaclass=ABCMeta):
     @trace
     def on_timer(self, event_name: str, event_data: any = None):
         pass
+
+    @trace
+    def is_entry_timeout_exceeded(self) -> bool:
+        """
+        Checks if the entry timeout has been exceeded since the scheduled entry time.
+        If exceeded, logs a warning and returns True.
+        """
+        if self.scheduled_entry_time is None:
+            return False
+            
+        timeout_seconds = self.config.entry_timeout_seconds
+        if timeout_seconds is None:
+            return False
+            
+        import pytz
+        from datetime import datetime
+        now = datetime.now(pytz.UTC)
+        
+        # Ensure scheduled_entry_time is UTC for comparison
+        scheduled_utc = self.scheduled_entry_time.astimezone(pytz.UTC)
+        elapsed = (now - scheduled_utc).total_seconds()
+        
+        if elapsed > timeout_seconds:
+            self.logger.warning(f"Entry timeout exceeded: {elapsed:.1f}s elapsed since scheduled time {scheduled_utc}, timeout is {timeout_seconds}s. Skipping to tomorrow.")
+            self.scheduled_entry_time = None # Reset to avoid repeated timeout warnings
+            return True
+            
+        return False
 
     @trace
     def contractDetails(self, reqId, contractDetails):

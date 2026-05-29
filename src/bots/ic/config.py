@@ -6,6 +6,7 @@ class IcConfig(ConfigBase):
     # Timezone and scheduling
     timezone: str = "America/New_York"
     entry_time: str = "09:45:00"
+    entry_timeout_seconds: int = 300 # 5 minutes
     
     # Days to expiration
     dte: int = 14

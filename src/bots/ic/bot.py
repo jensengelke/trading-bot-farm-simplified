@@ -72,6 +72,7 @@ class IcBot(BaseBot):
                 entry_datetime += timedelta(days=1)
         
         self.logger.info(f"Entry scheduled for: {entry_datetime}")
+        self.scheduled_entry_time = entry_datetime
         trigger_time = entry_datetime.strftime("%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
         self.timer_manager.add_timer(
             self.config.bot_name, 
@@ -99,6 +100,12 @@ class IcBot(BaseBot):
         """Entry point - resolve SPX underlying contract."""
         if self.entry_in_progress:
             self.logger.debug("Entry already in progress, skipping")
+            return
+            
+        if self.is_entry_timeout_exceeded():
+            self.logger.info("Timeout exceeded before starting observation. Rescheduling for tomorrow.")
+            self.clear_internal_state()
+            self.start()
             return
         
         self.entry_in_progress = True
@@ -134,6 +141,12 @@ class IcBot(BaseBot):
     @trace
     def on_underlying_resolved(self, status: ContractResolutionStatus, result_contracts: list[ContractDetails]):
         """Callback when SPX underlying is resolved."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if len(status.errors) > 0 or len(result_contracts) != 1 or not status.complete:
             self.logger.error(f"Failed to resolve SPX underlying: {status.errors}")
             self.entry_in_progress = False
@@ -155,6 +168,12 @@ class IcBot(BaseBot):
     @trace
     def on_underlying_price_received(self, success: bool, price_data: dict):
         """Callback when underlying price is received."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if not price_data:
             self.logger.error("Failed to get SPX price data. Aborting entry.")
             self.entry_in_progress = False
@@ -234,6 +253,12 @@ class IcBot(BaseBot):
     @trace
     def on_put_short_found(self, contract, greeks):
         """Callback when short put is found."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if contract is None:
             self.logger.error("Failed to find short put. Aborting entry.")
             self.entry_in_progress = False
@@ -269,6 +294,12 @@ class IcBot(BaseBot):
     @trace
     def on_put_long_found(self, contract, contract_details):
         """Callback when long put is resolved."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if contract is None:
             self.logger.error("Failed to resolve long put. Aborting entry.")
             self.entry_in_progress = False
@@ -296,6 +327,12 @@ class IcBot(BaseBot):
     @trace
     def on_call_short_underlying_price_received(self, success: bool, underlying_price: Optional[float]):
         """Callback when underlying price for call search is received."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if underlying_price is None:
             self.logger.error("Cannot determine underlying price for call search. Aborting entry.")
             self.entry_in_progress = False
@@ -319,6 +356,12 @@ class IcBot(BaseBot):
     @trace
     def on_call_short_found(self, contract, greeks):
         """Callback when short call is found."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if contract is None:
             self.logger.error("Failed to find short call. Aborting entry.")
             self.entry_in_progress = False
@@ -354,6 +397,12 @@ class IcBot(BaseBot):
     @trace
     def on_call_long_found(self, contract, contract_details):
         """Callback when long call is resolved."""
+        if self.is_entry_timeout_exceeded():
+            self.entry_in_progress = False
+            self.clear_internal_state()
+            self.start()
+            return
+
         if contract is None:
             self.logger.error("Failed to resolve long call. Aborting entry.")
             self.entry_in_progress = False
