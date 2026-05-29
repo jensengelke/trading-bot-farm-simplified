@@ -4,7 +4,7 @@ log_level: "INFO"
 
 # Timezone and scheduling
 timezone: "America/New_York"
-entry_time: "09:35:00"
+entry_time: "23:35:00"
 
 # Days to expiration
 dte: 14

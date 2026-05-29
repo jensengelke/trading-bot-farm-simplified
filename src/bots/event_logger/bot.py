@@ -14,10 +14,12 @@ class EventLoggerBot(BaseBot):
         """Called when bot is started."""
         self.logger.info(f"Starting EventLoggerBot: {self.config.bot_name}")
         self.logger.info("Bot is active and listening for order events.")
+        self.ib_connection.subscribe_all_orders(self)
 
     def stop(self):
         """Called when bot is stopped."""
         self.logger.info(f"Stopping EventLoggerBot: {self.config.bot_name}")
+        self.ib_connection.unsubscribe_all_orders(self)
 
     def order_status(self, orderId, status, filled, remaining, avgFillPrice, permId, 
                      parentId, lastFillPrice, clientId, whyHeld, mktCapPrice):

@@ -41,6 +41,7 @@ class FkkBot(BaseBot):
         tz_name = self.config.timezone if hasattr(self.config, "timezone") else "America/New_York"
         tz = pytz.timezone(tz_name)
         now = datetime.now(tz)
+        self.logger.info(f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S')} {tz_name}")
         
         if hasattr(self.config, "test_mode") and self.config.test_mode:
             self.logger.info("Test mode enabled. Triggering in 3 seconds.")
@@ -48,7 +49,7 @@ class FkkBot(BaseBot):
         else:
             entry_time = self.config.entry_time if hasattr(self.config, "entry_time") else "14:15:00"
             # determine if entry_time is in the past by creating a datetime object for entry_time and comparing it to the current time
-            entry_datetime = datetime.strptime(entry_time, "%H:%M:%S").replace(tzinfo=tz,year=now.year,month=now.month,day=now.day)        
+            entry_datetime = datetime.strptime(entry_time, "%H:%M:%S").replace(tzinfo=tz,year=now.year,month=now.month,day=now.day)
             
             if entry_datetime < now:
                 entry_datetime += timedelta(days=1)

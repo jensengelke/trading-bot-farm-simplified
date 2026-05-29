@@ -219,7 +219,7 @@ class BaseBot(metaclass=ABCMeta):
         else:
             order.orderRef = self.config.bot_name
 
-        return self.ib_connection.place_order(contract, order)
+        return self.ib_connection.place_order(self, contract, order)
 
 
     @trace

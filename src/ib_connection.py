@@ -20,7 +20,7 @@ logger = logging.getLogger("system")
 # Set to ERROR by default so it's silent during normal operations
 # Change to DEBUG when investigating order cache issues
 debug_logger = logging.getLogger("order_cache_debug")
-debug_logger.setLevel(logging.ERROR)
+debug_logger.setLevel(logging.INFO)
 
 class IBConnection(EWrapper, EClient):
     """
@@ -61,6 +61,7 @@ class IBConnection(EWrapper, EClient):
         self.reconnect_allowed: bool = True  # Flag to allow/disallow auto-reconnection
         
         self.request_listeners: Dict[int, list] = {} # reqId -> listener for a specific request
+        self.all_order_listeners: List[Any] = [] # Listeners for ALL order events
         # Subscriptions tracking
         self.req_id_counter = 1000
         self.active_subscriptions: Dict[int, int] = {}  # conId -> reqId
@@ -270,6 +271,15 @@ class IBConnection(EWrapper, EClient):
         debug_logger.info(f"[ORDER_CACHE] openOrder() called: orderId={orderId}, symbol={contract.symbol}, "
                          f"conId={contract.conId}, account={order.account}, status={orderState.status}, "
                          f"permId={order.permId}")
+
+        # Forward to request listeners (multiplexed)
+        with self._lock:
+            listeners = self.request_listeners.get(orderId, []).copy()
+            listeners.extend(self.all_order_listeners)
+        
+        for listener in listeners:
+            if hasattr(listener, "open_order"):
+                listener.open_order(orderId, contract, order, orderState)
         
         # Account context protection
         if self.selected_account and order.account and order.account != self.selected_account:
@@ -298,6 +308,15 @@ class IBConnection(EWrapper, EClient):
         
         debug_logger.info(f"[ORDER_CACHE] orderStatus() called: orderId={orderId}, status={status}, "
                          f"filled={filled}, remaining={remaining}, permId={permId}")
+
+        # Forward to request listeners (multiplexed)
+        with self._lock:
+            listeners = self.request_listeners.get(orderId, []).copy()
+            listeners.extend(self.all_order_listeners)
+        
+        for listener in listeners:
+            if hasattr(listener, "order_status"):
+                listener.order_status(orderId, status, filled, remaining, avgFillPrice, permId, parentId, lastFillPrice, clientId, whyHeld, mktCapPrice)
         
         with self._lock:
             # Use permId to look up order (cache is keyed by permId now)
@@ -317,6 +336,15 @@ class IBConnection(EWrapper, EClient):
         super().execDetails(reqId, contract, execution)
         if self.selected_account and execution.acctNumber and execution.acctNumber != self.selected_account:
             return
+
+        # Forward to request listeners (multiplexed)
+        with self._lock:
+            listeners = self.request_listeners.get(reqId, []).copy()
+            listeners.extend(self.all_order_listeners)
+        
+        for listener in listeners:
+            if hasattr(listener, "exec_details"):
+                listener.exec_details(reqId, contract, execution)
             
         with self._lock:
             if reqId not in self.executions_data:
@@ -520,7 +548,7 @@ class IBConnection(EWrapper, EClient):
 
 
     @trace
-    def place_order(self, contract: Contract, order: Order) -> Optional[int]:
+    def place_order(self, listener: Any, contract: Contract, order: Order) -> Optional[int]:
         with self._lock:
             if self.next_order_id is None:
                 logger.error("Cannot place order: Not connected or missing nextValidId.")
@@ -528,6 +556,9 @@ class IBConnection(EWrapper, EClient):
                 
             order_id = self.next_order_id
             self.next_order_id += 1
+            
+            # Register the listener for this specific orderId
+            self.request_listeners.setdefault(order_id, []).append(listener)
         
         logger.info(f"Placing Order {order_id} for {contract.symbol}: {order.action} {order.totalQuantity} with orderRef: {order.orderRef if hasattr(order, 'orderRef') and order.orderRef else 'N/A'}")
         order.account=self.selected_account  # Ensure order is placed under the selected account
@@ -727,3 +758,19 @@ class IBConnection(EWrapper, EClient):
         logger.info(f"Subscribing to market scanner (ReqId: {req_id})")
         self.reqScannerSubscription(req_id, scanner_subscription, [], [])
         return req_id
+
+    @trace
+    def subscribe_all_orders(self, listener: Any):
+        """Subscribe to all order events."""
+        with self._lock:
+            if listener not in self.all_order_listeners:
+                self.all_order_listeners.append(listener)
+                logger.info(f"Subscribed {listener} to all order events.")
+
+    @trace
+    def unsubscribe_all_orders(self, listener: Any):
+        """Unsubscribe from all order events."""
+        with self._lock:
+            if listener in self.all_order_listeners:
+                self.all_order_listeners.remove(listener)
+                logger.info(f"Unsubscribed {listener} from all order events.")
