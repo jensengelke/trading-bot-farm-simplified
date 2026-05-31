@@ -10,3 +10,4 @@ class FkkConfig(ConfigBase):
     intraday_move_pct: float = 0.3
     test_mode: bool = False
     force_open_position: bool = False
+    trade_days: list[str] = ["Tue", "Wed", "Thu", "Fri"]

@@ -8,6 +8,7 @@ from ibapi.order import Order
 from ibapi.tag_value import TagValue
 from ibapi.ticktype import TickTypeEnum, TickType
 from datetime import datetime, timedelta, date
+from typing import Optional, Callable
 import pytz
 import threading
 import os
@@ -38,22 +39,35 @@ class FkkBot(BaseBot):
     @trace
     def start(self):
         self.logger.info(f"Starting FkkBot with config: {self.config.bot_name}")
-        tz_name = self.config.timezone if hasattr(self.config, "timezone") else "America/New_York"
+        tz_name = getattr(self.config, "timezone", "America/New_York")
         tz = pytz.timezone(tz_name)
         now = datetime.now(tz)
         self.logger.info(f"Current time: {now.strftime('%Y-%m-%d %H:%M:%S')} {tz_name}")
         
-        if hasattr(self.config, "test_mode") and self.config.test_mode:
+        if getattr(self.config, "test_mode", False):
             self.logger.info("Test mode enabled. Triggering in 3 seconds.")
             entry_datetime = now + timedelta(seconds=3)
         else:
-            entry_time = self.config.entry_time if hasattr(self.config, "entry_time") else "14:15:00"
-            # determine if entry_time is in the past by creating a datetime object for entry_time and comparing it to the current time
-            entry_datetime = datetime.strptime(entry_time, "%H:%M:%S").replace(tzinfo=tz,year=now.year,month=now.month,day=now.day)
+            entry_time_str = getattr(self.config, "entry_time", "14:15:00")
+            # Ensure it has seconds
+            if len(entry_time_str.split(":")) == 2:
+                entry_time_str += ":00"
+                
+            # Create a naive datetime first, then localize it to the bot's timezone
+            naive_entry = datetime.strptime(entry_time_str, "%H:%M:%S").replace(year=now.year, month=now.month, day=now.day)
+            entry_datetime = tz.localize(naive_entry)
             
             if entry_datetime < now:
                 entry_datetime += timedelta(days=1)
-        
+
+            # Check if entry_datetime falls on a trade_day
+            day_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
+            trade_days = getattr(self.config, "trade_days", ["Tue", "Wed", "Thu", "Fri"])
+            
+            while day_map[entry_datetime.weekday()] not in trade_days:
+                self.logger.info(f"Skipping {day_map[entry_datetime.weekday()]} ({entry_datetime.strftime('%Y-%m-%d')}) as it's not in trade_days {trade_days}")
+                entry_datetime += timedelta(days=1)
+
         self.logger.info(f"entry_datetime: {entry_datetime}")
         self.scheduled_entry_time = entry_datetime
         trigger_time = entry_datetime.strftime("%Y-%m-%d %H:%M:%S") + f" {tz_name}"
@@ -190,6 +204,12 @@ class FkkBot(BaseBot):
             self.logger.debug("Entry already in progress, skipping evaluation")
             return
             
+        if self.is_entry_timeout_exceeded():
+            self.on_stop_confirm_entry_conditions()
+            self.clear_internal_state()
+            self.start()
+            return
+
         if len(self.historical_bars) < self.config.sma_period:
             return
 
@@ -409,5 +429,3 @@ class FkkBot(BaseBot):
                         self.logger.debug(f"removing reqid from list: {reqId}")
                         del self.option_market_data_req_ids[reqId]
                         self.create_order()
-                
-            

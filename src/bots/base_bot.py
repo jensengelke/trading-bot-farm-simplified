@@ -240,20 +240,23 @@ class BaseBot(metaclass=ABCMeta):
         if self.scheduled_entry_time is None:
             return False
             
-        timeout_seconds = self.config.entry_timeout_seconds
+        timeout_seconds = getattr(self.config, "entry_timeout_seconds", None)
         if timeout_seconds is None:
             return False
             
         import pytz
         from datetime import datetime
-        now = datetime.now(pytz.UTC)
         
-        # Ensure scheduled_entry_time is UTC for comparison
-        scheduled_utc = self.scheduled_entry_time.astimezone(pytz.UTC)
-        elapsed = (now - scheduled_utc).total_seconds()
+        # Ensure scheduled_entry_time is aware
+        if self.scheduled_entry_time.tzinfo is None:
+            self.logger.error("scheduled_entry_time is naive. This should not happen.")
+            return False
+
+        now = datetime.now(self.scheduled_entry_time.tzinfo)
+        elapsed = (now - self.scheduled_entry_time).total_seconds()
         
         if elapsed > timeout_seconds:
-            self.logger.warning(f"Entry timeout exceeded: {elapsed:.1f}s elapsed since scheduled time {scheduled_utc}, timeout is {timeout_seconds}s. Skipping to tomorrow.")
+            self.logger.warning(f"Entry timeout exceeded: {elapsed:.1f}s elapsed since scheduled time {self.scheduled_entry_time.strftime('%Y-%m-%d %H:%M:%S %Z')}, timeout is {timeout_seconds}s. Stopping observation.")
             self.scheduled_entry_time = None # Reset to avoid repeated timeout warnings
             return True
             
