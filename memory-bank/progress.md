@@ -29,6 +29,7 @@
 
 ## Evolution of Project Decisions
 1. **From Single to Shared Connection**: Shifted from individual bot connections to a centralized `IBConnection` for efficiency.
-2. **SQLite for Persistence**: Chose SQLite for ease of setup and sufficient performance for the current scale.
-3. **YAML-driven Config**: Selected YAML for human-readable and easily modifiable bot configurations.
-4. **PermId for Orders**: Switched to `permId` as the primary key for order tracking to ensure consistency across TWS restarts.
+2. **Chudfly Flexibility**: Refined Chudfly configuration to allow independent upward/downward gap thresholds and more flexible leg strike selection using relative offsets instead of a fixed spread width.
+3. **SQLite for Persistence**: Chose SQLite for ease of setup and sufficient performance for the current scale.
+4. **YAML-driven Config**: Selected YAML for human-readable and easily modifiable bot configurations.
+5. **PermId for Orders**: Switched to `permId` as the primary key for order tracking to ensure consistency across TWS restarts.

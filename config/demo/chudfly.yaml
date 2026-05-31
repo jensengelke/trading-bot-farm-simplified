@@ -1,0 +1,18 @@
+bot_name: "chudfly-1"
+bot_type: "chudfly"
+log_level: "INFO"
+timezone: "America/New_York"
+observation_start_time: "09:45:00"
+observation_end_time: "12:30:00"
+market_open_time: "09:30:00"
+open_range_end_time: "09:45:00"
+sma_period: 3
+max_gap_up_pct: 1.0
+max_gap_down_pct: 1.0
+dte: 0
+lower_long_leg_delta: 0.5
+short_leg_offset: 35
+upper_long_leg_offset: 35
+stop_loss_pct: 80.0
+trade_days: ["Mon", "Tue", "Wed", "Thu", "Fri"]
+test_mode: false
