@@ -26,6 +26,7 @@
 - Request maintenance logic in bots might need more robust tracking of different request types.
 - Occasional connection timeouts to TWS/Gateway.
 - **Fixed**: `AttributeError` in `EventLoggerBot.open_order` due to `ibapi` version differences in `OrderState` attributes (e.g., `commission` vs `commissionAndFees`).
+- **Fixed**: Chudfly breakout entry logic bug where starting the bot late caused immediate entry because the current price was already above the trigger price. Fixed by tracking `last_underlying_price` and requiring the previous price to be `<= trigger_price` and the current price to be `> trigger_price`.
 
 ## Evolution of Project Decisions
 1. **From Single to Shared Connection**: Shifted from individual bot connections to a centralized `IBConnection` for efficiency.

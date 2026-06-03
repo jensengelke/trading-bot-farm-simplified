@@ -36,6 +36,7 @@ class ChudflyBot(BaseBot):
         self.yesterday_close: Optional[float] = None
         self.today_open: Optional[float] = None
         self.trigger_price: Optional[float] = None
+        self.last_underlying_price: Optional[float] = None
         self.observation_started = False
         self.entry_in_progress = False
         self.position_opened = False
@@ -308,13 +309,21 @@ class ChudflyBot(BaseBot):
         if price <= 0 or price >= 1e308:
             return
 
-        if self.trigger_price is not None and price > self.trigger_price:
-            self.sma_value = (sum(self.prev_closes) + price) / 3
+        # Ensure we only process ticks for the underlying, not the BAG contract
+        if self.spread_tick_data_reqid is not None and reqId == self.spread_tick_data_reqid:
+            return
+
+        if self.trigger_price is not None:
+            if self.last_underlying_price is not None:
+                if self.last_underlying_price <= self.trigger_price and price > self.trigger_price:
+                    self.sma_value = (sum(self.prev_closes) + price) / 3
+                    
+                    if price > self.sma_value:
+                        self.logger.info(f"Entry triggered! Price {price} > Trigger {self.trigger_price} and Price > SMA {self.sma_value:.2f} (Previous Price was {self.last_underlying_price})")
+                        self.entry_in_progress = True
+                        self.on_entry_triggered(price)
             
-            if price > self.sma_value:
-                self.logger.info(f"Entry triggered! Price {price} > Trigger {self.trigger_price} and Price > SMA {self.sma_value:.2f}")
-                self.entry_in_progress = True
-                self.on_entry_triggered(price)
+            self.last_underlying_price = price
 
     @trace
     def on_entry_triggered(self, current_price: float):
