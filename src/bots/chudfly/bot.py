@@ -52,6 +52,9 @@ class ChudflyBot(BaseBot):
         self.initial_debit: Optional[float] = None
         self.stop_loss_order_id: Optional[int] = None
 
+        # spread_tick_data_reqid is used to track the market data subscription for the spread contract, so we can unsubscribe when needed
+        self.spread_tick_data_reqid: Optional[int] = None
+
     @trace
     def start(self):
         """Start the bot and schedule the daily routine."""
@@ -60,23 +63,34 @@ class ChudflyBot(BaseBot):
         tz = pytz.timezone(self.config.timezone)
         now = datetime.now(tz)
         
-        # Schedule the first task: resolve underlying and check gap/SMA
+        # Determine if we should start today or schedule for later
         market_open_time = datetime.strptime(self.config.market_open_time, "%H:%M:%S")
         market_open_dt = market_open_time.replace(
             tzinfo=tz, year=now.year, month=now.month, day=now.day
         )
-        self.scheduled_entry_time = market_open_dt
         
-        if market_open_dt < now:
-            if not self.config.test_mode:
-                market_open_dt += timedelta(days=1)
-        
-        # Check trade days
+        observation_end_time = datetime.strptime(self.config.observation_end_time, "%H:%M:%S")
+        observation_end_dt = observation_end_time.replace(
+            tzinfo=tz, year=now.year, month=now.month, day=now.day
+        )
+
         day_map = {0: "Mon", 1: "Tue", 2: "Wed", 3: "Thu", 4: "Fri", 5: "Sat", 6: "Sun"}
-        while day_map[market_open_dt.weekday()] not in self.config.trade_days:
-            market_open_dt += timedelta(days=1)
+        
+        # If it's a trading day and we're before the end of the observation window, we can start now
+        if day_map[now.weekday()] in self.config.trade_days and now < observation_end_dt:
+            self.logger.info("Within trading window for today. Starting daily routine immediately.")
+            self.on_daily_start()
+            return
+
+        # Otherwise, schedule for the next valid trading day at market open
+        target_dt = market_open_dt
+        if target_dt <= now:
+            target_dt += timedelta(days=1)
+        
+        while day_map[target_dt.weekday()] not in self.config.trade_days:
+            target_dt += timedelta(days=1)
             
-        trigger_time = market_open_dt.strftime("%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
+        trigger_time = target_dt.strftime("%Y-%m-%d %H:%M:%S") + f" {self.config.timezone}"
         self.logger.info(f"Daily routine scheduled for {trigger_time}")
         
         self.timer_manager.add_timer(
@@ -125,11 +139,14 @@ class ChudflyBot(BaseBot):
         self.underlying_contract = self.underlying_details.contract
         if self.underlying_contract:
             self.logger.info(f"Resolved SPX: conId={self.underlying_contract.conId}")
+
+            duration = f"{self.config.sma_period + 1} D"
+            self.logger.info(f"Requesting historical data for SMA calculation: duration={duration}, bar_size=1 day")
             
             self.historical_data_req_id = self.request_historical_data(
                 contract=self.underlying_contract,
                 end_datetime="",
-                duration=f"{self.config.sma_period + 1} D",
+                duration=duration,
                 bar_size="1 day",
                 what_to_show="TRADES",
                 use_rth=1,
@@ -207,13 +224,12 @@ class ChudflyBot(BaseBot):
             tzinfo=tz, year=now.year, month=now.month, day=now.day
         )
         
-        end_str = range_end_dt.strftime("%Y%m%d %H:%M:%S")
-        
+        # Passing datetime object directly ensures UTC formatting in the connection layer
         if self.underlying_contract:
             self.request_historical_data(
                 contract=self.underlying_contract,
-                end_datetime=end_str,
-                duration="15 M",
+                end_datetime=range_end_dt,
+                duration="900 S",
                 bar_size="1 min",
                 what_to_show="TRADES",
                 use_rth=1,
@@ -275,7 +291,11 @@ class ChudflyBot(BaseBot):
 
     @trace
     def tick_price(self, reqId: int, tickType: int, price: float, attrib: Any):
+        self.logger.debug(f"tick_price called with reqId: {reqId}, tickType: {tickType}, price: {price}")
         super().tick_price(reqId, tickType, price, attrib)
+
+        if self.spread_contract and reqId == self.spread_tick_data_reqid:
+            self.tick_price_bag(reqId, tickType, price, attrib)
 
         # Avoid calling BaseBot's is_entry_timeout_exceeded since Chudfly uses a hard stop time for observation. The timer will handle stopping the observation window.
         # if self.is_entry_timeout_exceeded():
@@ -421,10 +441,12 @@ class ChudflyBot(BaseBot):
         contract.comboLegs = [l1, l2, l3]
         self.spread_contract = contract
         
-        self.subscribe_market_data(self.spread_contract, "101,106")
+        self.spread_tick_data_reqid = self.subscribe_market_data(self.spread_contract, "101,106")
+        self.logger.debug(f"Subscribed to market data for Butterfly BAG with reqId {self.spread_tick_data_reqid}")
 
     @trace
     def tick_price_bag(self, reqId: int, tickType: int, price: float, attrib: Any):
+        self.logger.debug(f"Butterfly tick price. reqId: {reqId}, tickType: {tickType}, price: {price}")
         if self.position_opened or not self.entry_in_progress or self.spread_contract is None:
             return
             
@@ -446,7 +468,8 @@ class ChudflyBot(BaseBot):
             order.orderType = "LMT"
             order.lmtPrice = float(lmt_price)
             order.tif = "DAY"
-            order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+            order.smartComboRoutingParams = []
+            order.smartComboRoutingParams.append(TagValue("NonGuaranteed", "0"))
             
             self.entry_order_id = self.place_order(self.spread_contract, order)
             self.unsubscribe_market_data(self.spread_contract)
@@ -479,16 +502,10 @@ class ChudflyBot(BaseBot):
         order.orderType = "STP"
         order.auxPrice = float(stop_price)
         order.tif = "DAY"
-        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "1")]
+        order.smartComboRoutingParams = [TagValue("NonGuaranteed", "0")]
         
         self.stop_loss_order_id = self.place_order(self.spread_contract, order)
 
-    def tick_price_all(self, reqId: int, tickType: int, price: float, attrib: Any):
-        if self.spread_contract and reqId == self.get_req_id_for_contract(self.spread_contract):
-            self.tick_price_bag(reqId, tickType, price, attrib)
-        else:
-            self.tick_price(reqId, tickType, price, attrib)
-
-    def get_req_id_for_contract(self, contract: Contract) -> Optional[int]:
-        # Implementation of req_id lookup if needed, otherwise rely on BaseBot behavior
-        return None
+    @trace
+    def stop(self):
+        self.logger.info(f"Stopping ChudFlyBot with config: {self.config.bot_name}")

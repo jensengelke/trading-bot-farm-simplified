@@ -6,10 +6,11 @@ from ibapi.order import Order
 from src.bots.config_base import ConfigBase
 from src.ib_connection import IBConnection
 from src.timer_manager import TimerManager
-from src.utils import trace, is_valid_price
+from src.utils import trace, is_valid_price, format_ib_datetime
 from src.logging_config import setup_logging
 from src.utils.options_finder import OptionsFinder
-from typing import Optional, Callable
+from typing import Optional, Callable, Union
+from datetime import datetime
 
 class BaseBotFilter(logging.Filter):
     """
@@ -48,7 +49,7 @@ class BaseBot(metaclass=ABCMeta):
         self.scheduled_entry_time: Optional[datetime] = None
 
     @trace
-    def request_historical_data(self, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int, keep_up_to_date: bool, callback_historical_data_end, callback_historical_data_update=None) -> int:
+    def request_historical_data(self, contract: Contract, end_datetime: Union[str, datetime], duration: str, bar_size: str, what_to_show: str, use_rth: int, keep_up_to_date: bool, callback_historical_data_end, callback_historical_data_update=None) -> int:
         req_id = self.ib_connection.request_historical_data(self, contract, end_datetime, duration, bar_size, what_to_show, use_rth, keep_up_to_date)
         self._historical_data_requests[req_id] = {
             "keep_up_to_date": keep_up_to_date,

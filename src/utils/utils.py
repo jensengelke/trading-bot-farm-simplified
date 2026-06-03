@@ -1,5 +1,7 @@
 import functools
 import logging
+from datetime import datetime
+import pytz
 from zoneinfo import ZoneInfo
 
 system_logger = logging.getLogger("system_debug")
@@ -51,4 +53,17 @@ def get_ib_timezone(tz_string):
 def is_valid_price(val: float) -> bool:
     """Check if a price value is valid (non-None, positive, and finite)."""
     return val is not None and -1.797e308 < val < 1.797e308
+
+def format_ib_datetime(dt: datetime) -> str:
+    """
+    Formats a datetime object for IB API, ensuring it's in UTC.
+    Format used: YYYYMMDD HH:MM:SS UTC (blank separated with timezone suffix)
+    If the datetime is naive, it is assumed to be in UTC.
+    """
+    if dt.tzinfo is None:
+        dt = pytz.UTC.localize(dt)
+    else:
+        dt = dt.astimezone(pytz.UTC)
+    
+    return dt.strftime("%Y%m%d %H:%M:%S UTC")
 

@@ -3,6 +3,7 @@
 import functools
 import logging
 from zoneinfo import ZoneInfo
+from .utils import format_ib_datetime
 
 system_logger = logging.getLogger("system_debug")
 
@@ -54,6 +55,6 @@ def is_valid_price(val: float) -> bool:
     """Check if a price value is valid (non-None, positive, and finite)."""
     return val is not None and 0 < val < 1.797e308
 
-__all__ = ['trace', 'get_ib_timezone', 'options_finder', 'is_valid_price']
+__all__ = ['trace', 'get_ib_timezone', 'options_finder', 'is_valid_price', 'format_ib_datetime']
 
 # Made with Bob

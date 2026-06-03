@@ -1,7 +1,8 @@
 import sys
 import threading
 import logging
-from typing import Optional, Dict, Any
+from datetime import datetime
+from typing import Optional, Dict, Any, Union
 
 from ibapi.ticktype import TickTypeEnum
 from ibapi.client import EClient
@@ -13,7 +14,7 @@ from ibapi.execution import ExecutionFilter, Execution
 from ibapi.scanner import ScannerSubscription
 from decimal import Decimal
 
-from src.utils import trace
+from src.utils import trace, format_ib_datetime
 
 logger = logging.getLogger("system")
 # Dedicated debug logger for order cache investigation
@@ -690,16 +691,23 @@ class IBConnection(EWrapper, EClient):
         return req_id
 
     @trace
-    def request_historical_data(self, listener: Any, contract: Contract, end_datetime: str, duration: str, bar_size: str, what_to_show: str, use_rth: int = 1, keep_up_to_date: bool = False) -> int:
+    def request_historical_data(self, listener: Any, contract: Contract, end_datetime: Union[str, datetime], duration: str, bar_size: str, what_to_show: str, use_rth: int = 1, keep_up_to_date: bool = False) -> int:
         req_id = self.get_next_req_id()
+        
+        # Ensure end_datetime is correctly formatted for UTC
+        if isinstance(end_datetime, datetime):
+            ib_end_datetime = format_ib_datetime(end_datetime)
+        else:
+            ib_end_datetime = end_datetime
+
         with self._lock:
             self.request_listeners[req_id] = [listener]
             self.historical_data_config[req_id] = {
                 'keep_up_to_date': keep_up_to_date,
                 'data': []
             }
-        logger.info(f"Requesting historical data for {contract.symbol} (ReqId: {req_id})")
-        self.reqHistoricalData(req_id, contract, end_datetime, duration, bar_size, what_to_show, use_rth, 1, keep_up_to_date, [])
+        logger.info(f"Requesting historical data for {contract.symbol} (ReqId: {req_id}, End: {ib_end_datetime})")
+        self.reqHistoricalData(req_id, contract, ib_end_datetime, duration, bar_size, what_to_show, use_rth, 1, keep_up_to_date, [])
         return req_id
 
     @trace
