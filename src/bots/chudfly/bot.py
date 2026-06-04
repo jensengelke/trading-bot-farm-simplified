@@ -55,6 +55,7 @@ class ChudflyBot(BaseBot):
 
         # spread_tick_data_reqid is used to track the market data subscription for the spread contract, so we can unsubscribe when needed
         self.spread_tick_data_reqid: Optional[int] = None
+        self.spx_price: Optional[Dict[int, float]] = None  # Store latest SPX price by tickType
 
     @trace
     def start(self):
@@ -293,7 +294,7 @@ class ChudflyBot(BaseBot):
     @trace
     def tick_price(self, reqId: int, tickType: int, price: float, attrib: Any):
         self.logger.debug(f"tick_price called with reqId: {reqId}, tickType: {tickType}, price: {price}")
-        super().tick_price(reqId, tickType, price, attrib)
+        # super().tick_price(reqId, tickType, price, attrib)
 
         if self.spread_contract and reqId == self.spread_tick_data_reqid:
             self.tick_price_bag(reqId, tickType, price, attrib)
@@ -313,15 +314,25 @@ class ChudflyBot(BaseBot):
         if self.spread_tick_data_reqid is not None and reqId == self.spread_tick_data_reqid:
             return
 
+        self.spx_price = self.spx_price or {}
+        self.spx_price[tickType] = price
+
+        if self.spx_price.get(TickTypeEnum.LAST) is not None:
+            relevant_price = self.spx_price[TickTypeEnum.LAST]
+        elif self.spx_price.get(TickTypeEnum.BID) is not None and self.spx_price.get(TickTypeEnum.ASK) is not None:
+            relevant_price = (self.spx_price[TickTypeEnum.BID] + self.spx_price[TickTypeEnum.ASK]) / 2
+        else:
+            return
+
         if self.trigger_price is not None:
             if self.last_underlying_price is not None:
-                if self.last_underlying_price <= self.trigger_price and price > self.trigger_price:
-                    self.sma_value = (sum(self.prev_closes) + price) / 3
+                if self.last_underlying_price <= self.trigger_price and relevant_price > self.trigger_price:
+                    self.sma_value = (sum(self.prev_closes) + relevant_price) / 3
                     
-                    if price > self.sma_value:
-                        self.logger.info(f"Entry triggered! Price {price} > Trigger {self.trigger_price} and Price > SMA {self.sma_value:.2f} (Previous Price was {self.last_underlying_price})")
+                    if relevant_price > self.sma_value:
+                        self.logger.info(f"Entry triggered! Price {relevant_price} > Trigger {self.trigger_price} and Price > SMA {self.sma_value:.2f} (Previous Price was {self.last_underlying_price})")
                         self.entry_in_progress = True
-                        self.on_entry_triggered(price)
+                        self.on_entry_triggered(relevant_price)
             
             self.last_underlying_price = price
 
